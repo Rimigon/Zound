@@ -1,0 +1,17 @@
+[package]
+name = "zound-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Platform audio backend abstraction for Zound (cpal-based)"
+
+[dependencies]
+zound-core.workspace = true
+cpal.workspace = true
+ringbuf.workspace = true
+rubato.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true

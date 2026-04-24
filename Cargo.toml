@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/zound-core",
+    "crates/zound-platform",
+    "crates/zound-sync",
+    "crates/zound-output",
+    "app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+authors = ["Zound contributors"]
+
+[workspace.dependencies]
+zound-core = { path = "crates/zound-core" }
+zound-platform = { path = "crates/zound-platform" }
+zound-sync = { path = "crates/zound-sync" }
+zound-output = { path = "crates/zound-output" }
+
+cpal = "0.15"
+rubato = "0.15"
+ringbuf = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1"
+parking_lot = "0.12"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1

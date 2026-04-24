@@ -1,0 +1,18 @@
+[package]
+name = "zound-output"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Output and Device Manager for Zound (per-device volume, active set)"
+
+[dependencies]
+zound-core.workspace = true
+zound-sync.workspace = true
+zound-platform.workspace = true
+ringbuf.workspace = true
+rubato.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true

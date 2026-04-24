@@ -1,0 +1,133 @@
+//! Tauri команды — тонкий фасад над AudioEngine и i18n.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde::Serialize;
+use tauri::State;
+
+use zound_core::DeviceId;
+use zound_output::AudioEngine;
+use zound_platform::{AudioBackend, CpalBackend};
+use zound_sync::SyncEngine;
+
+use crate::i18n::I18n;
+
+/// Состояние, которое Tauri-handler получает через `State<AppState>`.
+pub struct AppState {
+    pub engine: Arc<AudioEngine>,
+    pub sync: Arc<SyncEngine>,
+    pub i18n: Arc<I18n>,
+}
+
+#[derive(Serialize)]
+pub struct DeviceDto {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub is_default: bool,
+}
+
+#[tauri::command]
+pub fn list_outputs() -> Result<Vec<DeviceDto>, String> {
+    let backend = CpalBackend::new();
+    let devices = backend.enumerate_outputs().map_err(|e| e.to_string())?;
+    Ok(devices
+        .into_iter()
+        .map(|d| DeviceDto {
+            id: d.id.to_string(),
+            name: d.name,
+            kind: format!("{:?}", d.kind),
+            sample_rate: d.sample_rate,
+            channels: d.channels,
+            is_default: d.is_default,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn start_engine(state: State<'_, AppState>) -> Result<(), String> {
+    state.engine.start().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn stop_engine(state: State<'_, AppState>) {
+    state.engine.stop();
+}
+
+#[tauri::command]
+pub fn engine_status(state: State<'_, AppState>) -> EngineStatus {
+    EngineStatus {
+        running: state.engine.is_running(),
+        loopback_source: state.engine.loopback_source(),
+    }
+}
+
+#[derive(Serialize)]
+pub struct EngineStatus {
+    pub running: bool,
+    pub loopback_source: Option<String>,
+}
+
+#[tauri::command]
+pub fn add_output(state: State<'_, AppState>, device_name: String) -> Result<String, String> {
+    state
+        .engine
+        .add_output(&device_name)
+        .map(|id| id.to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn remove_output(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.engine.remove_output(&DeviceId::from(id));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_output_volume(
+    state: State<'_, AppState>,
+    id: String,
+    volume: f32,
+) -> Result<(), String> {
+    state
+        .engine
+        .set_volume(&DeviceId::from(id), volume)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_output_latency(
+    state: State<'_, AppState>,
+    id: String,
+    latency_ms: u64,
+) -> Result<(), String> {
+    state
+        .sync
+        .set_device_latency(&DeviceId::from(id), Duration::from_millis(latency_ms))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn target_latency_ms(state: State<'_, AppState>) -> u64 {
+    state.sync.target_latency().as_millis() as u64
+}
+
+#[tauri::command]
+pub fn load_dictionary(state: State<'_, AppState>, lang: String) -> HashMap<String, String> {
+    state.i18n.set_language(&lang);
+    state.i18n.dictionary(&lang)
+}
+
+#[tauri::command]
+pub fn format_message(
+    state: State<'_, AppState>,
+    lang: String,
+    key: String,
+    args: HashMap<String, f64>,
+) -> Option<String> {
+    state.i18n.format(&lang, &key, &args)
+}

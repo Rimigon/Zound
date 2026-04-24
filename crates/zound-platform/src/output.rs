@@ -1,0 +1,195 @@
+//! Output-поток на конкретное устройство.
+//!
+//! Держит cpal-стрим + producer ringbuf-а, в который AudioEngine пушит
+//! сэмплы внутреннего формата (f32, 48 kHz, stereo). Внутри callback-а
+//! они конвертируются в формат устройства.
+
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{SampleFormat, Stream};
+use parking_lot::Mutex;
+use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
+use zound_core::{DeviceId, Error, Result};
+
+use crate::sample_convert::FromF32;
+
+/// Громкость устройства — атомарная, чтобы менять в любое время без лока.
+/// Храним f32 как u32-биты.
+#[derive(Clone)]
+pub struct AtomicVolume(Arc<AtomicU32>);
+
+impl AtomicVolume {
+    pub fn new(v: f32) -> Self {
+        Self(Arc::new(AtomicU32::new(v.to_bits())))
+    }
+    pub fn set(&self, v: f32) {
+        self.0.store(v.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+    pub fn get(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
+}
+
+impl Default for AtomicVolume {
+    fn default() -> Self {
+        Self::new(1.0)
+    }
+}
+
+pub struct OutputSink {
+    _stream: Stream,
+    pub device_id: DeviceId,
+    pub device_name: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub producer: HeapProd<f32>,
+    pub volume: AtomicVolume,
+}
+
+#[derive(Debug, Clone)]
+pub struct OutputOpts {
+    /// Ёмкость ringbuf-а в interleaved-сэмплах.
+    pub buffer_samples: usize,
+    /// Предзаполнение тишиной (для компенсации задержки). В сэмплах.
+    pub prefill_silence_samples: usize,
+}
+
+impl Default for OutputOpts {
+    fn default() -> Self {
+        Self {
+            buffer_samples: 96_000,
+            prefill_silence_samples: 0,
+        }
+    }
+}
+
+/// Открыть output на устройстве по его имени (то, что cpal отдаёт через
+/// `DeviceTrait::name`). Мы используем имя как ID в MVP — см. `cpal_backend.rs`.
+pub fn open_output_by_name(device_name: &str, opts: OutputOpts) -> Result<OutputSink> {
+    let host = cpal::default_host();
+    let mut devices = host
+        .output_devices()
+        .map_err(|e| Error::Backend(format!("output_devices: {e}")))?;
+    let device = devices
+        .find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
+        .ok_or_else(|| Error::DeviceNotFound(device_name.to_string()))?;
+
+    let supported = device
+        .default_output_config()
+        .map_err(|e| Error::Backend(format!("default_output_config: {e}")))?;
+    let sample_rate = supported.sample_rate().0;
+    let channels = supported.channels();
+    let format = supported.sample_format();
+
+    let config = cpal::StreamConfig {
+        channels,
+        sample_rate: cpal::SampleRate(sample_rate),
+        buffer_size: cpal::BufferSize::Default,
+    };
+
+    let rb = HeapRb::<f32>::new(opts.buffer_samples);
+    let (mut producer, consumer) = rb.split();
+
+    if opts.prefill_silence_samples > 0 {
+        let zeros = vec![0.0_f32; opts.prefill_silence_samples];
+        let pushed = producer.push_slice(&zeros);
+        tracing::debug!(pushed, "prefilled output with silence");
+    }
+
+    let consumer = Arc::new(Mutex::new(consumer));
+    let volume = AtomicVolume::new(1.0);
+
+    let stream = build_output_stream(&device, &config, format, consumer, volume.clone())?;
+    stream
+        .play()
+        .map_err(|e| Error::Backend(format!("stream.play: {e}")))?;
+
+    let resolved_name = device.name().unwrap_or_else(|_| device_name.to_string());
+
+    tracing::info!(%sample_rate, %channels, ?format, name = %resolved_name, "output started");
+
+    Ok(OutputSink {
+        _stream: stream,
+        device_id: DeviceId::from(resolved_name.clone()),
+        device_name: resolved_name,
+        sample_rate,
+        channels,
+        producer,
+        volume,
+    })
+}
+
+fn build_output_stream(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    format: SampleFormat,
+    consumer: Arc<Mutex<HeapCons<f32>>>,
+    volume: AtomicVolume,
+) -> Result<Stream> {
+    let err_cb = |e| tracing::error!(?e, "output stream error");
+
+    macro_rules! build {
+        ($ty:ty) => {{
+            let cons = consumer.clone();
+            let vol = volume.clone();
+            device
+                .build_output_stream(
+                    config,
+                    move |data: &mut [$ty], _info: &cpal::OutputCallbackInfo| {
+                        fill_output::<$ty>(cons.clone(), vol.get(), data);
+                    },
+                    err_cb,
+                    None,
+                )
+                .map_err(|e| Error::Backend(format!("build_output_stream: {e}")))
+        }};
+    }
+    match format {
+        SampleFormat::F32 => build!(f32),
+        SampleFormat::I16 => build!(i16),
+        SampleFormat::U16 => build!(u16),
+        SampleFormat::I32 => build!(i32),
+        other => Err(Error::Backend(format!(
+            "unsupported output format: {other}"
+        ))),
+    }
+}
+
+fn fill_output<T: FromF32>(consumer: Arc<Mutex<HeapCons<f32>>>, gain: f32, dst: &mut [T]) {
+    const CHUNK: usize = 1024;
+    let mut tmp = [0.0_f32; CHUNK];
+    let mut written = 0;
+    {
+        let mut cons = consumer.lock();
+        while written < dst.len() {
+            let n = (dst.len() - written).min(CHUNK);
+            let popped = cons.pop_slice(&mut tmp[..n]);
+            if popped == 0 {
+                break;
+            }
+            for i in 0..popped {
+                dst[written + i] = T::from_f32_clamped(tmp[i] * gain);
+            }
+            written += popped;
+        }
+    }
+    if written < dst.len() {
+        // Underrun — заполняем тишиной. Статично, чтобы не логировать часто.
+        static UNDERRUN_COUNT: AtomicU32 = AtomicU32::new(0);
+        let c = UNDERRUN_COUNT.fetch_add(1, Ordering::Relaxed);
+        if c % 100 == 0 {
+            tracing::warn!(
+                missing = dst.len() - written,
+                total = c + 1,
+                "output underrun"
+            );
+        }
+        let silence = T::from_f32_clamped(0.0);
+        for s in &mut dst[written..] {
+            *s = silence;
+        }
+    }
+}

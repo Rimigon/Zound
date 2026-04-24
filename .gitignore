@@ -1,0 +1,39 @@
+# Claude Code — локальные подсказки и документация для ассистента,
+# не публикуется в репозитории.
+.claude/
+CLAUDE.md
+
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Tauri
+/app/gen/schemas
+/app/src-tauri/target
+/app/src-ui/node_modules
+/app/src-ui/dist
+/app/src-ui/.svelte-kit
+# Placeholder-иконка генерируется build.rs-ом при отсутствии.
+# Настоящие финальные иконки коммитим, пока только плейсхолдер — скрываем.
+/app/icons/icon.ico
+
+# IDE
+.vscode/
+.idea/
+*.iml
+.fleet/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Локальные заметки, временные файлы, секреты
+*.local
+*.log
+/.env
+/.env.local
+/.env.*.local

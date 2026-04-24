@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zound</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand">
+        <div class="logo">Z</div>
+        <div>
+          <h1 data-i18n="app-title">Zound</h1>
+          <p class="subtitle" data-i18n="app-subtitle">Multi-device audio hub</p>
+        </div>
+      </div>
+      <div class="controls">
+        <label for="lang" data-i18n="language-label">Язык</label>
+        <select id="lang">
+          <option value="ru" data-i18n="language-ru">Русский</option>
+          <option value="en" data-i18n="language-en">English</option>
+        </select>
+        <button id="engine-toggle" class="primary" data-i18n="engine-start">Запустить</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel">
+        <div class="panel-head">
+          <h2 data-i18n="nav-devices">Устройства</h2>
+          <span id="target-latency" class="badge"></span>
+        </div>
+        <div id="devices" class="devices"></div>
+      </section>
+
+      <section class="panel">
+        <h2 data-i18n="nav-sync">Синхронизация</h2>
+        <p class="hint" data-i18n="sync-hint">
+          Для каждого активного устройства можно вручную подстраивать
+          задержку. Ползунки влияют на общую целевую задержку.
+        </p>
+        <div id="active-outputs" class="active-outputs"></div>
+      </section>
+    </main>
+
+    <footer class="bar footer">
+      <span id="status" class="status"></span>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>

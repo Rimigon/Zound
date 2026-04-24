@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Zound",
+  "version": "0.1.0",
+  "identifier": "io.zound.app",
+  "build": {
+    "frontendDist": "../app/src-ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Zound",
+        "width": 960,
+        "height": 640,
+        "minWidth": 640,
+        "minHeight": 480,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "Multi-device audio hub",
+    "longDescription": "Zound streams one audio source to multiple output devices with latency compensation."
+  }
+}

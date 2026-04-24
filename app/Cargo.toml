@@ -1,0 +1,31 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Zound application entry point (Tauri UI + CLI fallback)"
+
+[[bin]]
+name = "zound"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+zound-core.workspace = true
+zound-platform.workspace = true
+zound-sync.workspace = true
+zound-output.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+fluent-bundle = "0.15"
+unic-langid = { version = "0.9", features = ["macros"] }
+parking_lot.workspace = true

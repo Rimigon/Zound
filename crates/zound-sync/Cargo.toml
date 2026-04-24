@@ -1,0 +1,14 @@
+[package]
+name = "zound-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Synchronization engine for multi-device audio playback (Zound)"
+
+[dependencies]
+zound-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
