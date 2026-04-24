@@ -104,12 +104,92 @@ Loopback — это копия того, что играет на системн
 можно только через виртуальный аудио-драйвер (VB-Cable, BlackHole,
 собственный kext/DriverKit). Это пост-MVP.
 
-## Документация
+## Платформы
 
-- [`CLAUDE.md`](./CLAUDE.md) — архитектура, стек, конвенции, ссылки на
-  Skills (локальный, в `.gitignore`).
-- `.claude/skills/zound-*` — глубокие знания: синхронизация, WASAPI/CoreAudio/
-  PipeWire, Bluetooth, Rust-аудио-стек (локально).
+| ОС | Статус | Что именно |
+|---|---|---|
+| Windows 10/11 | ✅ работает | WASAPI loopback + вывод на N устройств |
+| macOS 13+ | ⚠️ только UI | окно открывается, capture = no-op (надо ScreenCaptureKit) |
+| Linux (PipeWire) | ⚠️ только UI | окно открывается, capture = no-op (надо PipeWire monitor) |
+
+## Установка из GitHub Releases
+
+Билды **не подписаны** (закрытый репо, тестовая раздача). ОС ругнётся —
+это нормально, обходится в два клика.
+
+### Windows
+
+1. Скачай `Zound_x.y.z_x64_en-US.msi` (или `_x64-setup.exe`).
+2. Запусти — появится синее окно **Защитник Windows SmartScreen**:
+   «Защитник Windows защитил ваш компьютер».
+3. Нажми **Подробнее** → **Выполнить в любом случае**.
+4. Если вместо SmartScreen «Неизвестный издатель» — **Выполнить**.
+
+Альтернатива через PowerShell (если вообще не хочешь видеть
+предупреждение):
+
+```powershell
+Unblock-File -Path .\Zound_0.1.0_x64_en-US.msi
+```
+
+### macOS
+
+1. Скачай `Zound_x.y.z_aarch64.dmg` (Apple Silicon) или
+   `Zound_x.y.z_x64.dmg` (Intel).
+2. Открой DMG, перетащи **Zound.app** в `Applications`.
+3. При первом запуске Gatekeeper скажет «Zound повреждён и не может быть
+   открыт» или «не удаётся проверить разработчика». Закрой окно.
+4. В терминале сними карантин:
+
+   ```bash
+   xattr -cr /Applications/Zound.app
+   ```
+
+5. Запусти ещё раз — **Правый клик → Открыть** → **Открыть** в диалоге.
+
+(Первые два шага — один раз на машину; после `xattr -cr` приложение
+запускается как обычно двойным кликом.)
+
+### Linux
+
+AppImage:
+
+```bash
+chmod +x Zound_0.1.0_amd64.AppImage
+./Zound_0.1.0_amd64.AppImage
+```
+
+`.deb`:
+
+```bash
+sudo dpkg -i Zound_0.1.0_amd64.deb
+```
+
+Требования: WebKitGTK 4.1 (обычно уже стоит), PipeWire либо PulseAudio.
+
+## Релиз: как собрать и опубликовать
+
+Workflow в `.github/workflows/release.yml` собирает под Windows, macOS
+(Intel + ARM) и Linux через `tauri-action`. Запускается на push тега
+`v*`:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GitHub Actions создаст **draft release**, ты откроешь его в UI репо и
+нажмёшь Publish. Артефакты (`.msi`, `.exe`, `.dmg`, `.AppImage`, `.deb`)
+прикрепляются автоматически.
+
+Локальная сборка под текущую ОС:
+
+```bash
+cargo install tauri-cli --version '^2' --locked
+cd app && cargo tauri build
+```
+
+Результат — в `target/release/bundle/`.
 
 ## Лицензия
 

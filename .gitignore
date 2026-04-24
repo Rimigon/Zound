@@ -14,9 +14,6 @@ Cargo.lock.bak
 /app/src-ui/node_modules
 /app/src-ui/dist
 /app/src-ui/.svelte-kit
-# Placeholder-иконка генерируется build.rs-ом при отсутствии.
-# Настоящие финальные иконки коммитим, пока только плейсхолдер — скрываем.
-/app/icons/icon.ico
 
 # IDE
 .vscode/

@@ -106,12 +106,93 @@ original (default) device. Eliminating the duplicate entirely requires
 a virtual audio driver (VB-Cable, BlackHole, a custom kext/DriverKit),
 which is post-MVP.
 
-## Documentation
+## Platforms
 
-- [`CLAUDE.md`](./CLAUDE.md) — architecture, stack, conventions,
-  references to Skills (local file, listed in `.gitignore`).
-- `.claude/skills/zound-*` — deep knowledge: sync, WASAPI/CoreAudio/
-  PipeWire, Bluetooth, Rust audio stack (local).
+| OS | Status | Detail |
+|---|---|---|
+| Windows 10/11 | ✅ working | WASAPI loopback + multi-device output |
+| macOS 13+ | ⚠️ UI only | window boots, capture is a no-op (needs ScreenCaptureKit) |
+| Linux (PipeWire) | ⚠️ UI only | window boots, capture is a no-op (needs PipeWire monitor) |
+
+## Installing from GitHub Releases
+
+Builds are **unsigned** (closed repo, test drop). The OS will warn you —
+that's expected, bypass is a two-click thing.
+
+### Windows
+
+1. Download `Zound_x.y.z_x64_en-US.msi` (or `_x64-setup.exe`).
+2. Run it — a blue **Windows Defender SmartScreen** window appears:
+   "Microsoft Defender SmartScreen prevented an unrecognized app from
+   starting".
+3. Click **More info** → **Run anyway**.
+4. If you see "Unknown publisher" instead — just click **Run**.
+
+PowerShell alternative (pre-unblock so you never see the warning):
+
+```powershell
+Unblock-File -Path .\Zound_0.1.0_x64_en-US.msi
+```
+
+### macOS
+
+1. Download `Zound_x.y.z_aarch64.dmg` (Apple Silicon) or
+   `Zound_x.y.z_x64.dmg` (Intel).
+2. Open the DMG, drag **Zound.app** into `Applications`.
+3. On first launch Gatekeeper will say "Zound is damaged and can't be
+   opened" or "cannot be verified". Dismiss the dialog.
+4. In Terminal, clear the quarantine attribute:
+
+   ```bash
+   xattr -cr /Applications/Zound.app
+   ```
+
+5. Launch again — **right click → Open → Open** in the dialog.
+
+(The first two steps are one-time per machine; after `xattr -cr` the
+app launches normally via double-click.)
+
+### Linux
+
+AppImage:
+
+```bash
+chmod +x Zound_0.1.0_amd64.AppImage
+./Zound_0.1.0_amd64.AppImage
+```
+
+`.deb`:
+
+```bash
+sudo dpkg -i Zound_0.1.0_amd64.deb
+```
+
+Requirements: WebKitGTK 4.1 (usually already installed), PipeWire or
+PulseAudio.
+
+## Releasing: build and publish
+
+The workflow at `.github/workflows/release.yml` builds for Windows,
+macOS (Intel + ARM) and Linux via `tauri-action`. It triggers on a
+`v*` tag push:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GitHub Actions creates a **draft release** — open it in the repo UI
+and hit Publish. Artifacts (`.msi`, `.exe`, `.dmg`, `.AppImage`,
+`.deb`) are attached automatically.
+
+Local build for the current OS:
+
+```bash
+cargo install tauri-cli --version '^2' --locked
+cd app && cargo tauri build
+```
+
+Output lands in `target/release/bundle/`.
 
 ## License
 
