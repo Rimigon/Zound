@@ -21,9 +21,6 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm64
-          - platform: macos-13
-            target: x86_64-apple-darwin
-            label: macos-intel
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: linux
@@ -91,7 +88,6 @@ jobs:
             |---|---|---|
             | Windows 10/11 | `Zound_*_x64_en-US.msi` или `*_x64-setup.exe` | см. Bypass ниже |
             | macOS Apple Silicon (M1/M2/M3) | `Zound_*_aarch64.dmg` | см. Bypass ниже |
-            | macOS Intel | `Zound_*_x64.dmg` | см. Bypass ниже |
             | Linux (Ubuntu/Debian-совместимые) | `Zound_*_amd64.deb` или `*_amd64.AppImage` | `chmod +x` и запуск |
 
             ## Bypass: обход блокировок (сборка не подписана)
@@ -127,10 +123,10 @@ jobs:
             | ОС | Статус | Что работает |
             |---|---|---|
             | Windows 10/11 | ✅ полноценно | WASAPI loopback + вывод на N устройств |
-            | macOS 13+ | 🧪 experimental | ScreenCaptureKit — первый запуск попросит разрешение на запись экрана |
             | Linux (PipeWire/Pulse) | 🧪 experimental | monitor-source default sink через libpulse-simple |
+            | macOS 13+ | 🧪 experimental | ScreenCaptureKit — первый запуск попросит разрешение на запись экрана (нужно даже для audio-only) |
 
-            macOS/Linux бэкенды добавлены в этом релизе, но валидировались только в CI. Репортите баги с ОС, выводом `zound --list` и логом `RUST_LOG=debug`.
+            Linux и macOS бэкенды валидировались только в CI, на живом железе ещё не гонялись. Репортите баги с ОС, выводом `zound --list` и логом `RUST_LOG=debug`.
 
             ## Известные ограничения
 

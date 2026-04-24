@@ -109,11 +109,11 @@ Loopback — это копия того, что играет на системн
 | ОС | Статус | Что именно |
 |---|---|---|
 | Windows 10/11 | ✅ работает | WASAPI loopback + вывод на N устройств |
-| macOS 13+ | 🧪 experimental | ScreenCaptureKit: при первом запуске запросит разрешение на запись экрана |
 | Linux (PipeWire/Pulse) | 🧪 experimental | monitor-source default sink-а через libpulse-simple |
+| macOS 13+ | 🧪 experimental | ScreenCaptureKit: при первом запуске система попросит разрешение на запись экрана (нужно для аудио-потока тоже) |
 
-Linux- и macOS-бэкенды добавлены, но тестировались только в CI-сборке.
-Если ловишь баг — issue с ОС, выводом `zound --list` и логом с
+Linux и macOS валидировались только CI-сборкой, на живом железе ещё не
+гонялись. Если ловишь баг — issue с ОС, выводом `zound --list` и логом
 `RUST_LOG=debug`.
 
 ## Установка из GitHub Releases
@@ -138,8 +138,8 @@ Unblock-File -Path .\Zound_0.2.0_x64_en-US.msi
 
 ### macOS
 
-1. Скачай `Zound_x.y.z_aarch64.dmg` (Apple Silicon) или
-   `Zound_x.y.z_x64.dmg` (Intel).
+1. Скачай `Zound_x.y.z_aarch64.dmg` (Apple Silicon — сборки под
+   Intel в v0.2.0 нет).
 2. Открой DMG, перетащи **Zound.app** в `Applications`.
 3. При первом запуске Gatekeeper скажет «Zound повреждён и не может быть
    открыт» или «не удаётся проверить разработчика». Закрой окно.
@@ -174,7 +174,7 @@ sudo dpkg -i Zound_0.2.0_amd64.deb
 ## Релиз: как собрать и опубликовать
 
 Workflow в `.github/workflows/release.yml` собирает под Windows, macOS
-(Intel + ARM) и Linux через `tauri-action`. Запускается на push тега
+(Apple Silicon) и Linux через `tauri-action`. Запускается на push тега
 `v*`:
 
 ```bash

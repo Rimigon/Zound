@@ -409,124 +409,158 @@ mod linux {
 // ---------------------------------------------------------------------------
 // macOS — ScreenCaptureKit (macOS 13+)
 // ---------------------------------------------------------------------------
+//
+// CoreAudio сам по себе loopback не даёт (нет аналога WASAPI
+// AUDCLNT_STREAMFLAGS_LOOPBACK), но ScreenCaptureKit — Apple-вский API для
+// скринкастов — отдаёт системное аудио как отдельный output. Без kext-а и
+// без виртуального драйвера. При первом запуске система попросит разрешение
+// на запись экрана (даже если мы пишем только аудио).
+//
+// Важная тонкость: SCK нельзя попросить «только аудио». Мы всё равно
+// запускаем видео-поток с минимальным разрешением (2×2), а frame-ы молча
+// выбрасываем в no-op handler. Аудио получаем через отдельный handler
+// с `SCStreamOutputType::Audio`.
 
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
+    use parking_lot::Mutex;
     use ringbuf::traits::{Producer, Split};
     use ringbuf::{HeapProd, HeapRb};
+    use screencapturekit::cm::AudioBufferList;
+    use screencapturekit::prelude::*;
     use std::sync::Arc;
 
-    use parking_lot::Mutex;
-    use screencapturekit::{
-        cm_sample_buffer::CMSampleBuffer,
-        sc_content_filter::{InitParams, SCContentFilter},
-        sc_error_handler::StreamErrorHandler,
-        sc_output_handler::{SCStreamOutputType, StreamOutput},
-        sc_shareable_content::SCShareableContent,
-        sc_stream::SCStream,
-        sc_stream_configuration::SCStreamConfiguration,
-    };
-
+    /// Drop-guard для SCStream: вызывает stop_capture перед тем, как
+    /// отпустить стрим. SCStream сам по себе в Drop останавливается, но
+    /// явный stop позволяет залогировать ошибку при сбое.
     struct MacHandle {
-        _stream: SCStream,
+        stream: Option<SCStream>,
     }
 
     impl CaptureHandle for MacHandle {}
 
-    struct AudioSink {
-        producer: Arc<Mutex<HeapProd<f32>>>,
-        channels: u16,
-    }
-
-    struct ErrorLogger;
-
-    impl StreamErrorHandler for ErrorLogger {
-        fn on_error(&self) {
-            tracing::error!("ScreenCaptureKit stream error");
-        }
-    }
-
-    impl StreamOutput for AudioSink {
-        fn did_output_sample_buffer(&self, sample: CMSampleBuffer, of_type: SCStreamOutputType) {
-            if !matches!(of_type, SCStreamOutputType::Audio) {
-                return;
-            }
-            // Извлекаем PCM-данные. CMSampleBuffer даёт AudioBufferList-подобный
-            // слайс байт; ScreenCaptureKit на macOS отдаёт Float32 non-interleaved
-            // или interleaved в зависимости от конфига — мы просим interleaved.
-            let Ok(audio_buffers) = sample.sys_ref.get_av_audio_buffer_list() else {
-                return;
-            };
-            for buf in audio_buffers.iter() {
-                let bytes = buf.data();
-                // FLOAT32 → интерпретируем напрямую.
-                let samples: &[f32] = unsafe {
-                    std::slice::from_raw_parts(
-                        bytes.as_ptr() as *const f32,
-                        bytes.len() / std::mem::size_of::<f32>(),
-                    )
-                };
-                let mut prod = self.producer.lock();
-                let pushed = prod.push_slice(samples);
-                if pushed < samples.len() {
-                    static OVERRUN: std::sync::atomic::AtomicU32 =
-                        std::sync::atomic::AtomicU32::new(0);
-                    let c = OVERRUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if c % 100 == 0 {
-                        tracing::warn!(
-                            dropped = samples.len() - pushed,
-                            total = c + 1,
-                            channels = self.channels,
-                            "sc capture overrun"
-                        );
-                    }
+    impl Drop for MacHandle {
+        fn drop(&mut self) {
+            if let Some(stream) = self.stream.take() {
+                if let Err(e) = stream.stop_capture() {
+                    tracing::warn!(?e, "SCStream stop_capture failed");
                 }
             }
         }
     }
 
+    /// Handler на `SCStreamOutputType::Audio` — извлекает PCM-байты из
+    /// CMSampleBuffer и пушит в ringbuf. `SCStreamOutputTrait` требует
+    /// только `Send + Sync` от реализации.
+    struct AudioHandler {
+        producer: Arc<Mutex<HeapProd<f32>>>,
+    }
+
+    impl SCStreamOutputTrait for AudioHandler {
+        fn did_output_sample_buffer(
+            &self,
+            sample: CMSampleBuffer,
+            output_type: SCStreamOutputType,
+        ) {
+            if !matches!(output_type, SCStreamOutputType::Audio) {
+                return;
+            }
+            let Some(list) = sample.audio_buffer_list() else {
+                return;
+            };
+            for buffer in list.iter() {
+                let bytes = buffer.data();
+                // SCK отдаёт Float32 в native-endian. Копируем чанками,
+                // чтобы не лочить producer на весь буфер зараз.
+                const CHUNK: usize = 1024;
+                let mut tmp = [0.0_f32; CHUNK];
+                let mut i = 0;
+                while i + 4 <= bytes.len() {
+                    let end = (i + CHUNK * 4).min(bytes.len());
+                    let slice = &bytes[i..end];
+                    let n = slice.len() / 4;
+                    for (k, chunk) in slice.chunks_exact(4).enumerate() {
+                        tmp[k] =
+                            f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    }
+                    let mut prod = self.producer.lock();
+                    let pushed = prod.push_slice(&tmp[..n]);
+                    if pushed < n {
+                        static OVERRUN: std::sync::atomic::AtomicU32 =
+                            std::sync::atomic::AtomicU32::new(0);
+                        let c = OVERRUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if c % 100 == 0 {
+                            tracing::warn!(
+                                dropped = n - pushed,
+                                total = c + 1,
+                                "sc capture overrun"
+                            );
+                        }
+                    }
+                    i = end;
+                }
+            }
+        }
+    }
+
+    /// Пустой handler на `Screen`-поток. SCK не умеет «только аудио»,
+    /// кадры приходят — мы их молча дропаем.
+    struct VideoNoOp;
+    impl SCStreamOutputTrait for VideoNoOp {
+        fn did_output_sample_buffer(
+            &self,
+            _sample: CMSampleBuffer,
+            _output_type: SCStreamOutputType,
+        ) {
+        }
+    }
+
     pub fn open(opts: CaptureOpts) -> Result<Capture> {
-        // Нужен дисплей как «anchor» для ContentFilter — аудио сам по себе
-        // захватить нельзя, но SCStream допускает «без видео-output-а».
-        let content = SCShareableContent::current();
+        // 1. Anchor-дисплей для ContentFilter. SCK требует хотя бы один.
+        let content = SCShareableContent::get()
+            .map_err(|e| Error::Backend(format!("SCShareableContent::get: {e:?}")))?;
         let display = content
-            .displays
+            .displays()
             .into_iter()
             .next()
-            .ok_or_else(|| Error::Backend("no displays available for ScreenCaptureKit".into()))?;
+            .ok_or_else(|| Error::Backend("no displays available for SCK".into()))?;
 
+        // 2. Фильтр: весь дисплей, без исключений окон.
+        let filter = SCContentFilter::create()
+            .with_display(&display)
+            .with_excluding_windows(&[])
+            .build();
+
+        // 3. Конфиг: минимальное видео (2×2) + stereo 48k audio,
+        // исключаем собственный процесс (защита от feedback-loop на уровне SDK).
         let channels: u16 = 2;
         let sample_rate: u32 = 48_000;
+        let config = SCStreamConfiguration::new()
+            .with_width(2)
+            .with_height(2)
+            .with_captures_audio(true)
+            .with_sample_rate(sample_rate as i32)
+            .with_channel_count(channels as i32)
+            .with_excludes_current_process_audio(true);
 
-        let config = SCStreamConfiguration {
-            width: 2,
-            height: 2,
-            captures_audio: true,
-            sample_rate: sample_rate as i32,
-            channel_count: channels as i32,
-            excludes_current_process_audio: true,
-            ..Default::default()
-        };
-
-        let filter = SCContentFilter::new(InitParams::Display(display));
-        let mut stream = SCStream::new(filter, config, ErrorLogger {});
-
+        // 4. Ringbuf + handlers.
         let rb = HeapRb::<f32>::new(opts.buffer_samples);
         let (producer, consumer) = rb.split();
         let producer = Arc::new(Mutex::new(producer));
 
-        stream.add_output(
-            AudioSink {
+        let mut stream = SCStream::new(&filter, &config);
+        stream.add_output_handler(VideoNoOp, SCStreamOutputType::Screen);
+        stream.add_output_handler(
+            AudioHandler {
                 producer: producer.clone(),
-                channels,
             },
             SCStreamOutputType::Audio,
         );
 
         stream
             .start_capture()
-            .map_err(|e| Error::Backend(format!("sc start_capture: {e:?}")))?;
+            .map_err(|e| Error::Backend(format!("SCStream start_capture: {e:?}")))?;
 
         tracing::info!(
             %sample_rate, %channels,
@@ -535,7 +569,9 @@ mod macos {
 
         Ok(Capture {
             session: CaptureSession {
-                _handle: Box::new(MacHandle { _stream: stream }),
+                _handle: Box::new(MacHandle {
+                    stream: Some(stream),
+                }),
                 channels,
                 sample_rate,
                 source_name: "system audio (ScreenCaptureKit)".into(),
@@ -543,4 +579,9 @@ mod macos {
             consumer,
         })
     }
+
+    // Подавляем warning, что AudioBufferList не используется напрямую —
+    // мы трогаем его через `.iter()` возвращённый из `audio_buffer_list()`.
+    #[allow(dead_code)]
+    type _AudioBufferListAlias = AudioBufferList;
 }

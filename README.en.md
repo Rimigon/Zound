@@ -111,12 +111,12 @@ which is post-MVP.
 | OS | Status | Detail |
 |---|---|---|
 | Windows 10/11 | ✅ working | WASAPI loopback + multi-device output |
-| macOS 13+ | 🧪 experimental | ScreenCaptureKit — first launch asks for screen recording permission |
 | Linux (PipeWire/Pulse) | 🧪 experimental | monitor source of the default sink via libpulse-simple |
+| macOS 13+ | 🧪 experimental | ScreenCaptureKit — first launch asks for screen recording permission (required even for audio-only capture) |
 
-macOS and Linux backends are implemented but have only been validated via CI
-builds. Please file issues with OS, `zound --list` output, and
-`RUST_LOG=debug` logs if something breaks.
+Linux and macOS backends are validated via CI builds only, not yet on real
+hardware. File issues with OS, `zound --list` output, and `RUST_LOG=debug`
+logs if something breaks.
 
 ## Installing from GitHub Releases
 
@@ -140,8 +140,8 @@ Unblock-File -Path .\Zound_0.2.0_x64_en-US.msi
 
 ### macOS
 
-1. Download `Zound_x.y.z_aarch64.dmg` (Apple Silicon) or
-   `Zound_x.y.z_x64.dmg` (Intel).
+1. Download `Zound_x.y.z_aarch64.dmg` (Apple Silicon — no Intel build
+   in v0.2.0).
 2. Open the DMG, drag **Zound.app** into `Applications`.
 3. On first launch Gatekeeper will say "Zound is damaged and can't be
    opened" or "cannot be verified". Dismiss the dialog.
@@ -177,7 +177,7 @@ PulseAudio.
 ## Releasing: build and publish
 
 The workflow at `.github/workflows/release.yml` builds for Windows,
-macOS (Intel + ARM) and Linux via `tauri-action`. It triggers on a
+macOS (Apple Silicon) and Linux via `tauri-action`. It triggers on a
 `v*` tag push:
 
 ```bash
