@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -18,7 +21,7 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm64
-          - platform: macos-latest
+          - platform: macos-13
             target: x86_64-apple-darwin
             label: macos-intel
           - platform: ubuntu-22.04
@@ -53,7 +56,7 @@ jobs:
         with:
           workspaces: '. -> target'
 
-      - name: Build & bundle via tauri-action
+      - name: Build & publish via tauri-action
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
