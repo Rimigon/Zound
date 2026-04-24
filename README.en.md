@@ -111,8 +111,12 @@ which is post-MVP.
 | OS | Status | Detail |
 |---|---|---|
 | Windows 10/11 | ✅ working | WASAPI loopback + multi-device output |
-| macOS 13+ | ⚠️ UI only | window boots, capture is a no-op (needs ScreenCaptureKit) |
-| Linux (PipeWire) | ⚠️ UI only | window boots, capture is a no-op (needs PipeWire monitor) |
+| macOS 13+ | 🧪 experimental | ScreenCaptureKit — first launch asks for screen recording permission |
+| Linux (PipeWire/Pulse) | 🧪 experimental | monitor source of the default sink via libpulse-simple |
+
+macOS and Linux backends are implemented but have only been validated via CI
+builds. Please file issues with OS, `zound --list` output, and
+`RUST_LOG=debug` logs if something breaks.
 
 ## Installing from GitHub Releases
 
@@ -131,7 +135,7 @@ that's expected, bypass is a two-click thing.
 PowerShell alternative (pre-unblock so you never see the warning):
 
 ```powershell
-Unblock-File -Path .\Zound_0.1.0_x64_en-US.msi
+Unblock-File -Path .\Zound_0.2.0_x64_en-US.msi
 ```
 
 ### macOS
@@ -157,14 +161,14 @@ app launches normally via double-click.)
 AppImage:
 
 ```bash
-chmod +x Zound_0.1.0_amd64.AppImage
-./Zound_0.1.0_amd64.AppImage
+chmod +x Zound_0.2.0_amd64.AppImage
+./Zound_0.2.0_amd64.AppImage
 ```
 
 `.deb`:
 
 ```bash
-sudo dpkg -i Zound_0.1.0_amd64.deb
+sudo dpkg -i Zound_0.2.0_amd64.deb
 ```
 
 Requirements: WebKitGTK 4.1 (usually already installed), PipeWire or
@@ -177,8 +181,8 @@ macOS (Intel + ARM) and Linux via `tauri-action`. It triggers on a
 `v*` tag push:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 GitHub Actions creates a **draft release** — open it in the repo UI

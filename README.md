@@ -109,8 +109,12 @@ Loopback — это копия того, что играет на системн
 | ОС | Статус | Что именно |
 |---|---|---|
 | Windows 10/11 | ✅ работает | WASAPI loopback + вывод на N устройств |
-| macOS 13+ | ⚠️ только UI | окно открывается, capture = no-op (надо ScreenCaptureKit) |
-| Linux (PipeWire) | ⚠️ только UI | окно открывается, capture = no-op (надо PipeWire monitor) |
+| macOS 13+ | 🧪 experimental | ScreenCaptureKit: при первом запуске запросит разрешение на запись экрана |
+| Linux (PipeWire/Pulse) | 🧪 experimental | monitor-source default sink-а через libpulse-simple |
+
+Linux- и macOS-бэкенды добавлены, но тестировались только в CI-сборке.
+Если ловишь баг — issue с ОС, выводом `zound --list` и логом с
+`RUST_LOG=debug`.
 
 ## Установка из GitHub Releases
 
@@ -129,7 +133,7 @@ Loopback — это копия того, что играет на системн
 предупреждение):
 
 ```powershell
-Unblock-File -Path .\Zound_0.1.0_x64_en-US.msi
+Unblock-File -Path .\Zound_0.2.0_x64_en-US.msi
 ```
 
 ### macOS
@@ -155,14 +159,14 @@ Unblock-File -Path .\Zound_0.1.0_x64_en-US.msi
 AppImage:
 
 ```bash
-chmod +x Zound_0.1.0_amd64.AppImage
-./Zound_0.1.0_amd64.AppImage
+chmod +x Zound_0.2.0_amd64.AppImage
+./Zound_0.2.0_amd64.AppImage
 ```
 
 `.deb`:
 
 ```bash
-sudo dpkg -i Zound_0.1.0_amd64.deb
+sudo dpkg -i Zound_0.2.0_amd64.deb
 ```
 
 Требования: WebKitGTK 4.1 (обычно уже стоит), PipeWire либо PulseAudio.
@@ -174,8 +178,8 @@ Workflow в `.github/workflows/release.yml` собирает под Windows, mac
 `v*`:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 GitHub Actions создаст **draft release**, ты откроешь его в UI репо и

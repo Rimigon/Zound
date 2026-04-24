@@ -43,6 +43,7 @@ jobs:
             librsvg2-dev \
             libasound2-dev \
             libjack-jackd2-dev \
+            libpulse-dev \
             libssl-dev \
             patchelf
 
@@ -65,15 +66,85 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Zound ${{ github.ref_name }}'
           releaseBody: |
-            ## Zound ${{ github.ref_name }}
+            **Zound** — мультиустройственный аудио-хаб на Rust + Tauri.
+            Снимает системный звук через loopback и синхронно раздаёт на
+            несколько устройств одновременно, с per-device громкостью и
+            ручной компенсацией задержки.
 
-            Multi-device audio hub. **Unsigned builds** — see README for how
-            to bypass SmartScreen (Windows) and Gatekeeper (macOS).
+            ---
 
-            ### Platform status
-            - **Windows** — full functionality (WASAPI loopback).
-            - **macOS / Linux** — UI boots, capture backend is a no-op
-              placeholder; don't expect audio routing yet.
+            ## Что в этой сборке
+
+            - 🎧 WASAPI loopback — захват системного аудио на Windows.
+            - 🔊 Параллельный вывод на N устройств (наушники, колонки, BT).
+            - 🎚 Индивидуальная громкость на каждое устройство, realtime.
+            - ⏱ Ручная задержка-слайдер → общая цель пересчитывается сама.
+            - 🔁 Авто-ресемплинг при разных SR (44.1 ↔ 48 kHz).
+            - 🛡 Защита от feedback-loop (нельзя добавить source-устройство).
+            - 🔄 Список устройств обновляется автоматически каждые 2 с.
+            - ▶️⏹ Старт/стоп прямо из UI.
+            - 🌐 Переключаемый интерфейс ru / en (Project Fluent).
+
+            ## Какую сборку качать
+
+            | ОС | Файл | Что делать дальше |
+            |---|---|---|
+            | Windows 10/11 | `Zound_*_x64_en-US.msi` или `*_x64-setup.exe` | см. Bypass ниже |
+            | macOS Apple Silicon (M1/M2/M3) | `Zound_*_aarch64.dmg` | см. Bypass ниже |
+            | macOS Intel | `Zound_*_x64.dmg` | см. Bypass ниже |
+            | Linux (Ubuntu/Debian-совместимые) | `Zound_*_amd64.deb` или `*_amd64.AppImage` | `chmod +x` и запуск |
+
+            ## Bypass: обход блокировок (сборка не подписана)
+
+            ### 🪟 Windows — SmartScreen
+            Двойной клик на `.msi` → появится синее окно **Защитник Windows SmartScreen** → **Подробнее** → **Выполнить в любом случае**.
+
+            Или заранее через PowerShell:
+            ```powershell
+            Unblock-File -Path .\Zound_0.2.0_x64_en-US.msi
+            ```
+
+            ### 🍎 macOS — Gatekeeper
+            Перетащи `Zound.app` из DMG в `/Applications`. На первый запуск будет «Zound повреждён» или «не удаётся проверить разработчика». Один раз выполни в терминале:
+            ```bash
+            xattr -cr /Applications/Zound.app
+            ```
+            Затем **правый клик на Zound.app → Открыть → Открыть**.
+
+            ### 🐧 Linux
+            AppImage:
+            ```bash
+            chmod +x Zound_0.2.0_amd64.AppImage
+            ./Zound_0.2.0_amd64.AppImage
+            ```
+            `.deb`:
+            ```bash
+            sudo dpkg -i Zound_0.2.0_amd64.deb
+            ```
+
+            ## Статус платформ
+
+            | ОС | Статус | Что работает |
+            |---|---|---|
+            | Windows 10/11 | ✅ полноценно | WASAPI loopback + вывод на N устройств |
+            | macOS 13+ | 🧪 experimental | ScreenCaptureKit — первый запуск попросит разрешение на запись экрана |
+            | Linux (PipeWire/Pulse) | 🧪 experimental | monitor-source default sink через libpulse-simple |
+
+            macOS/Linux бэкенды добавлены в этом релизе, но валидировались только в CI. Репортите баги с ОС, выводом `zound --list` и логом `RUST_LOG=debug`.
+
+            ## Известные ограничения
+
+            - **«Двоение» звука** — по дизайну loopback-подхода: система продолжает играть на default-устройстве, Zound дублирует на добавленные. Чтобы слышать только через Zound, убавь громкость на исходном устройстве.
+            - Latency калибруется **на слух** слайдером; авто-калибровка — в следующих релизах.
+            - Тест-сигнал (щелчок / метроном) ещё не встроен.
+
+            ## Как сообщить о баге
+
+            Issue в этом репо с указанием: ОС, версия Zound, устройства в системе (`zound.exe --list`), что делал, что получил. Приложи лог с `RUST_LOG=debug`.
+
+            ---
+
+            *Это закрытая preview-сборка для тестирования с друзьями. Публичный релиз будет после того, как macOS/Linux backends подтянутся до уровня Windows.*
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
