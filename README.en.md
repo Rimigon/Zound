@@ -140,8 +140,10 @@ Unblock-File -Path .\Zound_0.2.0_x64_en-US.msi
 
 ### macOS
 
-1. Download `Zound_x.y.z_aarch64.dmg` (Apple Silicon — no Intel build
-   in v0.2.0).
+Requires Apple Silicon (M1/M2/M3/M4) and macOS 13 (Ventura) or later.
+No Intel build is published right now.
+
+1. Download `Zound_x.y.z_aarch64.dmg`.
 2. Open the DMG, drag **Zound.app** into `Applications`.
 3. On first launch Gatekeeper will say "Zound is damaged and can't be
    opened" or "cannot be verified". Dismiss the dialog.
@@ -151,10 +153,41 @@ Unblock-File -Path .\Zound_0.2.0_x64_en-US.msi
    xattr -cr /Applications/Zound.app
    ```
 
-5. Launch again — **right click → Open → Open** in the dialog.
+5. Launch again — **right click → Open → Open** in the dialog. No-Terminal
+   alternative: **System Settings → Privacy & Security**, scroll to the
+   bottom for "Zound was blocked…" → **Open Anyway**.
+6. macOS will show **"Zound would like to record this computer's screen"**
+   — click **Open System Settings**, enable Zound under **Privacy &
+   Security → Screen & System Audio Recording**, then relaunch the app.
+   This is mandatory: without the permission, ScreenCaptureKit cannot
+   deliver system audio and the process terminates immediately.
 
-(The first two steps are one-time per machine; after `xattr -cr` the
-app launches normally via double-click.)
+(Steps 3–4 are one-time per machine; the screen recording permission
+is also granted once.)
+
+**If you still get "Can't open the app 'Zound'" after `xattr -cr`**,
+that almost always means screen recording permission hasn't been
+granted yet, or macOS is older than 13.0. Inspect the crash via:
+
+```bash
+log show --predicate 'process == "Zound"' --last 5m --info
+```
+
+### Alternative without Zound: built-in Multi-Output Device
+
+If you only need to mirror audio to several devices — without per-device
+volumes or latency sliders — macOS can do it natively:
+
+1. **Audio MIDI Setup** (`⌘+Space → "Audio MIDI Setup"`).
+2. "+" at the bottom left → **Create Multi-Output Device**.
+3. Check the devices you want; enable **Drift Correction** for
+   Bluetooth outputs.
+4. Pick the new device as the output in the menu-bar volume control.
+
+This does not solve Bluetooth headphones with different initial
+latencies (drift correction compensates drift but not the starting
+offset) and gives no independent per-device volume — those are the
+cases where Zound helps.
 
 ### Linux
 

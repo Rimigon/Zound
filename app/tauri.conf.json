@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Zound",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "identifier": "io.zound.app",
   "build": {
     "frontendDist": "../app/src-ui"
@@ -34,6 +34,10 @@
     ],
     "category": "Utility",
     "shortDescription": "Multi-device audio hub",
-    "longDescription": "Zound mirrors system audio to multiple output devices with latency compensation."
+    "longDescription": "Zound mirrors system audio to multiple output devices with latency compensation.",
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "frameworks": []
+    }
   }
 }

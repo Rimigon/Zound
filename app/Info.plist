@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Zound captures system audio through the Screen Recording API to mirror it to multiple output devices simultaneously. No video is recorded or stored.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Zound may use the microphone for future latency auto-calibration. The current version does not record microphone input.</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
