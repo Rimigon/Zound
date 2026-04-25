@@ -15,6 +15,9 @@ device-add = Add
 device-remove = Remove
 device-source-badge = source
 device-source-note = Loopback capture source. Cannot be added — feedback would occur.
+device-input-only-badge = input only
+device-input-only-note = This is a recording-only device (microphone). It cannot be added as an output.
+show-all-devices = Show all devices (including inputs)
 no-active-outputs = No active outputs. Add at least one from the list.
 doubling-note =
     The system default device keeps playing natively. Extra outputs

@@ -9,7 +9,8 @@ manual latency compensation, and a switchable UI (Russian / English).
 
 ## What it does today (MVP)
 
-- 🎧 WASAPI loopback capture from the current default output.
+- 🎧 System loopback capture: WASAPI on Windows, ScreenCaptureKit on
+  macOS 13+, PulseAudio/PipeWire monitor source on Linux.
 - 🔊 Parallel output to **N devices** at the same time.
 - 🎚 Per-device **volume**, updated atomically inside the realtime
   callback.
@@ -18,10 +19,28 @@ manual latency compensation, and a switchable UI (Russian / English).
 - 🔁 Automatic **resampling** (`rubato`) when capture and output
   sample rates differ (e.g. 44.1 kHz → 48 kHz).
 - 🛡 **Feedback-loop protection**: the capture source device cannot be
-  added as an output.
+  added as an output. Works on Windows and macOS.
 - 🔄 **Auto device refresh** every 2 seconds.
+- 🔍 **"Show all devices"** toggle (off by default — outputs only; on —
+  inputs are also listed but cannot be added).
 - ▶️⏹ Start/stop pipeline from the UI without restarting the app.
 - 🌐 Language switch ru/en (Project Fluent, `.ftl` dictionaries).
+
+## What's new in 0.2.2
+
+- **macOS — all devices now visible.** Previously `cpal` filtered
+  `output_devices` through `default_output_config().is_ok()`, hiding
+  idle outputs (DisplayPort, built-in speakers when another default
+  was selected). We now bypass cpal's filter via direct CoreAudio
+  enumeration.
+- **macOS — feedback-loop blocker.** The current system default output
+  is now used as the capture session's `source_name`, so adding it as
+  a Zound output is blocked (avoiding doubled audio), the same way it
+  already worked on Windows.
+- **UI — "show all devices" toggle.** A checkbox in the Devices panel:
+  off by default (outputs only); on lists inputs too (marked "input
+  only", no add button).
+- **Branding.** Updated application icon and header logo.
 
 ## Stack
 
