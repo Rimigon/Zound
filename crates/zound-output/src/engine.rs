@@ -24,16 +24,17 @@
 //!                 🎧 A                    🔊 B                    📶 C
 //! ```
 
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::{Mutex, RwLock};
 use ringbuf::traits::{Consumer, Observer, Producer};
 use rubato::{FastFixedIn, PolynomialDegree, Resampler};
 use zound_core::{DeviceId, Error, Result};
-use zound_platform::{Capture, CaptureOpts, OutputOpts, OutputSink};
+use zound_platform::{Capture, CaptureOpts, OutputOpts, OutputSink, TestStream};
 use zound_sync::SyncEngine;
 
 use crate::OutputManager;
@@ -58,6 +59,25 @@ enum EngineCmd {
         id: DeviceId,
         volume: f32,
         reply: SyncSender<Result<(), String>>,
+    },
+    SetMuted {
+        id: DeviceId,
+        muted: bool,
+        reply: SyncSender<Result<(), String>>,
+    },
+    SetBalance {
+        id: DeviceId,
+        balance: f32,
+        reply: SyncSender<Result<(), String>>,
+    },
+    PlayTestSignal {
+        device_name: String,
+        kind: zound_platform::TestKind,
+        reply: SyncSender<Result<(), String>>,
+    },
+    StopTestSignal {
+        device_name: String,
+        reply: SyncSender<()>,
     },
     Shutdown,
 }
@@ -170,6 +190,63 @@ impl AudioEngine {
             .map_err(Error::Other)
     }
 
+    pub fn set_muted(&self, id: &DeviceId, muted: bool) -> Result<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.cmd_tx
+            .send(EngineCmd::SetMuted {
+                id: id.clone(),
+                muted,
+                reply: tx,
+            })
+            .map_err(|_| Error::Other("engine thread gone".into()))?;
+        rx.recv()
+            .map_err(|_| Error::Other("engine thread dropped reply".into()))?
+            .map_err(Error::Other)
+    }
+
+    /// Balance L/R, диапазон [-1.0; +1.0]. Применяется только для stereo-
+    /// устройств; для mono/4ch+ просто игнорируется (apply skip).
+    pub fn set_balance(&self, id: &DeviceId, balance: f32) -> Result<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.cmd_tx
+            .send(EngineCmd::SetBalance {
+                id: id.clone(),
+                balance: balance.clamp(-1.0, 1.0),
+                reply: tx,
+            })
+            .map_err(|_| Error::Other("engine thread gone".into()))?;
+        rx.recv()
+            .map_err(|_| Error::Other("engine thread dropped reply".into()))?
+            .map_err(Error::Other)
+    }
+
+    pub fn play_test_signal(
+        &self,
+        device_name: &str,
+        kind: zound_platform::TestKind,
+    ) -> Result<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.cmd_tx
+            .send(EngineCmd::PlayTestSignal {
+                device_name: device_name.to_string(),
+                kind,
+                reply: tx,
+            })
+            .map_err(|_| Error::Other("engine thread gone".into()))?;
+        rx.recv()
+            .map_err(|_| Error::Other("engine thread dropped reply".into()))?
+            .map_err(Error::Other)
+    }
+
+    pub fn stop_test_signal(&self, device_name: &str) {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let _ = self.cmd_tx.send(EngineCmd::StopTestSignal {
+            device_name: device_name.to_string(),
+            reply: tx,
+        });
+        let _ = rx.recv();
+    }
+
     pub fn active_outputs(&self) -> Vec<DeviceId> {
         self.active_ids.read().clone()
     }
@@ -193,6 +270,19 @@ pub const ERR_FEEDBACK_LOOP: &str = "feedback-default-blocked";
 struct WorkerOutput {
     sink: OutputSink,
     resampler: Option<ResampleCtx>,
+    /// Pre-allocated buffer for the final interleaved chunk we push into
+    /// `sink.producer`. Capacity = `max(WORKER_CHUNK_FRAMES,
+    /// max_output_frames) * out_channels` — фиксируется при
+    /// `handle_add_output`. Без этого аллокировали Vec на каждый чанк в
+    /// worker-loop (jitter-риск).
+    interleaved_out: Vec<f32>,
+    /// Balance L/R, f32 в диапазоне [-1.0; +1.0] через AtomicU32 bits.
+    /// Применяется в worker-thread перед push в ringbuf, только если
+    /// `out_channels == 2` (stereo). Для не-stereo игнорируется.
+    balance: Arc<AtomicU32>,
+    /// Timestamp последнего успешного push в ringbuf, micros UNIX epoch.
+    /// Шарится с `SyncEngine` для агрегации drift между устройствами.
+    last_push_micros: Arc<AtomicU64>,
 }
 
 struct ResampleCtx {
@@ -213,6 +303,7 @@ fn audio_thread(
 ) {
     let mut capture: Option<Capture> = None;
     let mut workers: Vec<WorkerOutput> = Vec::new();
+    let mut test_streams: Vec<TestStream> = Vec::new();
     let mut interleaved: Vec<f32> = Vec::new();
     let mut planar: Vec<Vec<f32>> = Vec::new();
 
@@ -284,6 +375,57 @@ fn audio_thread(
                     };
                     let _ = reply.send(res);
                 }
+                Ok(EngineCmd::SetMuted { id, muted, reply }) => {
+                    let res = match workers.iter().find(|w| w.sink.device_id == id) {
+                        Some(w) => {
+                            w.sink.muted.store(muted, Ordering::Relaxed);
+                            outputs.set_muted(&id, muted).ok();
+                            Ok(())
+                        }
+                        None => Err(format!("device not found: {id}")),
+                    };
+                    let _ = reply.send(res);
+                }
+                Ok(EngineCmd::SetBalance { id, balance, reply }) => {
+                    let res = match workers.iter().find(|w| w.sink.device_id == id) {
+                        Some(w) => {
+                            w.balance.store(balance.to_bits(), Ordering::Relaxed);
+                            Ok(())
+                        }
+                        None => Err(format!("device not found: {id}")),
+                    };
+                    let _ = reply.send(res);
+                }
+                Ok(EngineCmd::PlayTestSignal {
+                    device_name,
+                    kind,
+                    reply,
+                }) => {
+                    // Защита от feedback: тест на source = loopback вернётся
+                    // в наш capture и зациклится.
+                    let is_source = capture
+                        .as_ref()
+                        .map(|c| c.session.source_name == device_name)
+                        .unwrap_or(false);
+                    let res = if is_source {
+                        Err(ERR_FEEDBACK_LOOP.to_string())
+                    } else if test_streams.iter().any(|t| t.device_name == device_name) {
+                        Err(format!("test already playing on {device_name}"))
+                    } else {
+                        match zound_platform::start_test_stream(&device_name, kind) {
+                            Ok(t) => {
+                                test_streams.push(t);
+                                Ok(())
+                            }
+                            Err(e) => Err(e.to_string()),
+                        }
+                    };
+                    let _ = reply.send(res);
+                }
+                Ok(EngineCmd::StopTestSignal { device_name, reply }) => {
+                    test_streams.retain(|t| t.device_name != device_name);
+                    let _ = reply.send(());
+                }
                 Ok(EngineCmd::Shutdown) => {
                     tracing::info!("audio-thread shutdown");
                     return;
@@ -312,6 +454,10 @@ fn audio_thread(
         } else {
             thread::sleep(tick_sleep);
         }
+
+        // 3. Сборка отыгравших test-streams (Click/Sine self-terminate
+        // через stop_flag; Metronome — только по UI-команде Stop).
+        test_streams.retain(|t| !t.is_done());
     }
 }
 
@@ -367,11 +513,24 @@ fn handle_add_output(
         .map_err(|e| e.to_string())?;
     let device_id = sink.device_id.clone();
 
-    sync.add_device(device_id.clone(), intrinsic, sink.sample_rate);
+    let last_push_micros = sync.add_device(device_id.clone(), intrinsic, sink.sample_rate);
     outputs.add(device_id.clone());
     active_ids.write().push(device_id.clone());
 
-    workers.push(WorkerOutput { sink, resampler });
+    let max_out_frames = resampler
+        .as_ref()
+        .map(|r| r.max_output_frames)
+        .unwrap_or(WORKER_CHUNK_FRAMES);
+    let interleaved_out = Vec::with_capacity(max_out_frames * sink.channels as usize);
+    let balance = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
+
+    workers.push(WorkerOutput {
+        sink,
+        resampler,
+        interleaved_out,
+        balance,
+        last_push_micros,
+    });
     tracing::info!(%device_id, "output added");
     Ok(device_id)
 }
@@ -423,15 +582,12 @@ fn push_to_output(
 
     match w.resampler.as_mut() {
         None => {
-            let adapted = adapt_channels(interleaved_src, cap_channels, out_channels);
-            let pushed = w.sink.producer.push_slice(&adapted);
-            if pushed < adapted.len() {
-                tracing::debug!(
-                    dropped = adapted.len() - pushed,
-                    device = %w.sink.device_id,
-                    "output ringbuf full"
-                );
-            }
+            adapt_channels_into(
+                interleaved_src,
+                cap_channels,
+                out_channels,
+                &mut w.interleaved_out,
+            );
         }
         Some(ctx) => {
             // Деинтерлив под каналы устройства (если разнятся — дублируем).
@@ -456,31 +612,71 @@ fn push_to_output(
                 }
             };
             debug_assert!(out_frames <= ctx.max_output_frames);
-            let mut out_interleaved = Vec::with_capacity(out_frames * out_channels);
+            w.interleaved_out.clear();
             for f in 0..out_frames {
                 for ch in 0..out_channels {
                     let src_ch = ch.min(ctx.output_planar.len() - 1);
-                    out_interleaved.push(ctx.output_planar[src_ch][f]);
+                    w.interleaved_out.push(ctx.output_planar[src_ch][f]);
                 }
-            }
-            let pushed = w.sink.producer.push_slice(&out_interleaved);
-            if pushed < out_interleaved.len() {
-                tracing::debug!(
-                    dropped = out_interleaved.len() - pushed,
-                    device = %w.sink.device_id,
-                    "resampled output ringbuf full"
-                );
             }
         }
     }
+
+    // Применить balance — только для stereo. Один atomic load на чанк.
+    apply_stereo_balance(&mut w.interleaved_out, out_channels, &w.balance);
+
+    let pushed = w.sink.producer.push_slice(&w.interleaved_out);
+    if pushed < w.interleaved_out.len() {
+        tracing::debug!(
+            dropped = w.interleaved_out.len() - pushed,
+            device = %w.sink.device_id,
+            "output ringbuf full"
+        );
+    }
+    if pushed > 0 {
+        let now_micros = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+        w.last_push_micros.store(now_micros, Ordering::Relaxed);
+    }
 }
 
-fn adapt_channels(src: &[f32], src_ch: usize, dst_ch: usize) -> Vec<f32> {
+/// Constant-power pan law: theta = (balance + 1) * π / 4. При balance=0 →
+/// 1/√2 на каждом канале, perceptual loudness не проседает.
+/// Применяется in-place; для не-stereo skip.
+fn apply_stereo_balance(buf: &mut [f32], channels: usize, balance: &AtomicU32) {
+    if channels != 2 {
+        return;
+    }
+    let b = f32::from_bits(balance.load(Ordering::Relaxed)).clamp(-1.0, 1.0);
+    if b == 0.0 {
+        // unity-эквивалент: сохраняем оригинальную loudness.
+        // 1/√2 ≈ 0.7071 — не нужно трогать (centred = unity).
+        // Но constant-power даёт 0.7071 для центра, а пользователь ожидает
+        // unity. Поэтому при balance=0 — пропускаем (no-op).
+        return;
+    }
+    let theta = (b + 1.0) * std::f32::consts::FRAC_PI_4;
+    let l_gain = theta.cos() * std::f32::consts::SQRT_2;
+    let r_gain = theta.sin() * std::f32::consts::SQRT_2;
+    let frames = buf.len() / 2;
+    for f in 0..frames {
+        buf[f * 2] *= l_gain;
+        buf[f * 2 + 1] *= r_gain;
+    }
+}
+
+/// Адаптирует каналы (mono↔stereo, downmix к меньшему N) и записывает
+/// результат в `out`, переиспользуя его capacity. `out` очищается перед
+/// заполнением — без переаллокаций, если capacity достаточен.
+fn adapt_channels_into(src: &[f32], src_ch: usize, dst_ch: usize, out: &mut Vec<f32>) {
+    out.clear();
     if src_ch == dst_ch {
-        return src.to_vec();
+        out.extend_from_slice(src);
+        return;
     }
     let frames = src.len() / src_ch;
-    let mut out = Vec::with_capacity(frames * dst_ch);
     for f in 0..frames {
         let base = f * src_ch;
         match (src_ch, dst_ch) {
@@ -497,5 +693,4 @@ fn adapt_channels(src: &[f32], src_ch: usize, dst_ch: usize) -> Vec<f32> {
             }
         }
     }
-    out
 }

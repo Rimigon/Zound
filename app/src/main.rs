@@ -75,8 +75,13 @@ fn run_tauri() {
             commands::add_output,
             commands::remove_output,
             commands::set_output_volume,
+            commands::set_output_muted,
+            commands::set_output_balance,
             commands::set_output_latency,
             commands::target_latency_ms,
+            commands::sync_status,
+            commands::play_test_signal,
+            commands::stop_test_signal,
             commands::load_dictionary,
             commands::format_message,
         ])

@@ -12,19 +12,52 @@ manual latency compensation, and a switchable UI (Russian / English).
 - 🎧 System loopback capture: WASAPI on Windows, ScreenCaptureKit on
   macOS 13+, PulseAudio/PipeWire monitor source on Linux.
 - 🔊 Parallel output to **N devices** at the same time.
-- 🎚 Per-device **volume**, updated atomically inside the realtime
-  callback.
+- 🎚 Per-device **volume, mute and L/R balance**, updated atomically
+  inside the realtime callback.
 - ⏱ Manual per-device **latency**; target latency is recomputed
   automatically by the Sync Engine.
+- 🧭 **Drift indicator** badge in the header showing live sync delta
+  between active outputs (threshold 50 ms).
+- 🎵 **Test signal**: click / 1 kHz sine / metronome 40-240 BPM on any
+  device — for by-ear calibration.
 - 🔁 Automatic **resampling** (`rubato`) when capture and output
   sample rates differ (e.g. 44.1 kHz → 48 kHz).
 - 🛡 **Feedback-loop protection**: the capture source device cannot be
   added as an output. Works on Windows and macOS.
 - 🔄 **Auto device refresh** every 2 seconds.
+- 🌗 **Dark/Light/Auto theme** toggle in the header.
+- 💾 **Auto-reconnect** the last active outputs on engine start.
 - 🔍 **"Show all devices"** toggle (off by default — outputs only; on —
   inputs are also listed but cannot be added).
 - ▶️⏹ Start/stop pipeline from the UI without restarting the app.
 - 🌐 Language switch ru/en (Project Fluent, `.ftl` dictionaries).
+
+## What's new in 0.3.0
+
+- **Mute and Balance per device.** Each active output now has a Mute
+  toggle (zero gain in the cpal callback, click-free) and an L/R
+  Balance slider using a constant-power pan law (perceived loudness
+  doesn't dip at center). Mute is instant; balance applies in the
+  worker thread with no allocations.
+- **Test signal** (closes the MVP gap). A 🔊 button per device opens
+  a popover with three sources: a single 5 ms click, a 5-second
+  1 kHz tone, and a metronome (40-240 BPM). Plays through a separate
+  cpal stream alongside the regular output and does not enter the
+  loopback.
+- **Drift indicator.** A new badge in the Devices panel header:
+  "synced" when last-push timestamps are within 50 ms across active
+  outputs, "drift X ms" in amber otherwise. Hidden with fewer than
+  2 active outputs.
+- **Dark/Light theme.** A toggle in the header (☀ / 🌙 / 🌓). Persists.
+  The light palette is tuned to the logo gradient; the dark one shifts
+  the secondary accent toward violet for visual continuity.
+- **Auto-reconnect last session.** On engine start, Zound restores the
+  previously active outputs with their volume / latency / balance /
+  mute. Missing devices are reported with a status message and the
+  rest continue.
+- **Realtime-safety fix.** The per-chunk `Vec::with_capacity` in
+  `adapt_channels` and `push_to_output` (worker loop) is gone —
+  WorkerOutput now holds pre-allocated buffers.
 
 ## What's new in 0.2.2
 

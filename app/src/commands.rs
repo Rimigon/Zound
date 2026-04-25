@@ -9,7 +9,7 @@ use tauri::State;
 
 use zound_core::DeviceId;
 use zound_output::AudioEngine;
-use zound_platform::{AudioBackend, CpalBackend};
+use zound_platform::{AudioBackend, CpalBackend, TestKind};
 use zound_sync::SyncEngine;
 
 use crate::i18n::I18n;
@@ -143,6 +143,73 @@ pub fn set_output_volume(
         .engine
         .set_volume(&DeviceId::from(id), volume)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_output_muted(
+    state: State<'_, AppState>,
+    id: String,
+    muted: bool,
+) -> Result<(), String> {
+    state
+        .engine
+        .set_muted(&DeviceId::from(id), muted)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_output_balance(
+    state: State<'_, AppState>,
+    id: String,
+    balance: f32,
+) -> Result<(), String> {
+    state
+        .engine
+        .set_balance(&DeviceId::from(id), balance)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn play_test_signal(
+    state: State<'_, AppState>,
+    device_name: String,
+    kind: String,
+    bpm: Option<u16>,
+) -> Result<(), String> {
+    let kind = match kind.as_str() {
+        "click" => TestKind::Click,
+        "sine" => TestKind::Sine1kHz,
+        "metronome" => TestKind::Metronome {
+            bpm: bpm.unwrap_or(120).clamp(40, 240),
+        },
+        other => return Err(format!("unknown test kind: {other}")),
+    };
+    state
+        .engine
+        .play_test_signal(&device_name, kind)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn stop_test_signal(state: State<'_, AppState>, device_name: String) {
+    state.engine.stop_test_signal(&device_name);
+}
+
+#[derive(Serialize)]
+pub struct SyncStatusDto {
+    pub in_sync: bool,
+    pub drift_ms: u32,
+    pub active_count: u32,
+}
+
+#[tauri::command]
+pub fn sync_status(state: State<'_, AppState>) -> SyncStatusDto {
+    let snap = state.sync.drift_snapshot();
+    SyncStatusDto {
+        in_sync: snap.in_sync,
+        drift_ms: snap.drift_ms,
+        active_count: snap.active_count,
+    }
 }
 
 #[tauri::command]

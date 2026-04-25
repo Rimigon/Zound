@@ -10,6 +10,8 @@
 //! — после MVP. Детали в `.claude/skills/zound-audio-sync/SKILL.md`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -22,6 +24,10 @@ pub const MIN_SAFETY_MARGIN: Duration = Duration::from_millis(20);
 /// Целевая общая latency по умолчанию. 200 мс хватает под BT SBC.
 pub const DEFAULT_TARGET_LATENCY: Duration = Duration::from_millis(200);
 
+/// Порог, выше которого считаем устройства рассинхронизованными.
+/// Используется UI для индикатора drift.
+pub const DRIFT_THRESHOLD_MS: u64 = 50;
+
 /// Настройки одного устройства, учитываемые при синхронизации.
 #[derive(Debug, Clone)]
 pub struct DeviceSyncParams {
@@ -32,6 +38,18 @@ pub struct DeviceSyncParams {
     pub compensation_delay: Duration,
     /// Текущий sample rate устройства (может отличаться от внутреннего).
     pub sample_rate: u32,
+    /// Timestamp последнего push-а в ringbuf этого устройства (UNIX epoch
+    /// micros). 0 = ещё не пушили (ignored aggregator-ом). Worker сторит
+    /// это после каждого `producer.push_slice`.
+    pub last_push_micros: Arc<AtomicU64>,
+}
+
+/// Снимок drift-состояния для UI.
+#[derive(Debug, Clone, Copy)]
+pub struct DriftSnapshot {
+    pub drift_ms: u32,
+    pub active_count: u32,
+    pub in_sync: bool,
 }
 
 pub struct SyncEngine {
@@ -56,8 +74,16 @@ impl SyncEngine {
     }
 
     /// Добавить устройство с известной latency. Пересчитывает
-    /// compensation_delay для всех устройств.
-    pub fn add_device(&self, id: DeviceId, intrinsic_latency: Duration, sample_rate: u32) {
+    /// compensation_delay для всех устройств. Возвращает Arc на
+    /// `last_push_micros` — worker должен хранить clone и обновлять
+    /// его после каждого push-а в ringbuf.
+    pub fn add_device(
+        &self,
+        id: DeviceId,
+        intrinsic_latency: Duration,
+        sample_rate: u32,
+    ) -> Arc<AtomicU64> {
+        let last_push_micros = Arc::new(AtomicU64::new(0));
         let mut inner = self.inner.write();
         inner.devices.insert(
             id,
@@ -65,9 +91,11 @@ impl SyncEngine {
                 intrinsic_latency,
                 compensation_delay: Duration::ZERO,
                 sample_rate,
+                last_push_micros: last_push_micros.clone(),
             },
         );
         Self::recalculate(&mut inner);
+        last_push_micros
     }
 
     pub fn remove_device(&self, id: &DeviceId) {
@@ -99,6 +127,43 @@ impl SyncEngine {
 
     pub fn device_count(&self) -> usize {
         self.inner.read().devices.len()
+    }
+
+    /// Снимок drift между устройствами. drift = max - min последних
+    /// timestamp'ов push-а; нули (устройство ещё не пушило) игнорируются.
+    /// При <2 «живых» устройств drift = 0, in_sync = true.
+    pub fn drift_snapshot(&self) -> DriftSnapshot {
+        let inner = self.inner.read();
+        let mut min_t = u64::MAX;
+        let mut max_t = 0u64;
+        let mut active = 0u32;
+        for params in inner.devices.values() {
+            let t = params.last_push_micros.load(Ordering::Relaxed);
+            if t == 0 {
+                continue;
+            }
+            active += 1;
+            if t < min_t {
+                min_t = t;
+            }
+            if t > max_t {
+                max_t = t;
+            }
+        }
+        if active < 2 {
+            return DriftSnapshot {
+                drift_ms: 0,
+                active_count: active,
+                in_sync: true,
+            };
+        }
+        let drift_micros = max_t.saturating_sub(min_t);
+        let drift_ms = (drift_micros / 1000) as u32;
+        DriftSnapshot {
+            drift_ms,
+            active_count: active,
+            in_sync: (drift_ms as u64) <= DRIFT_THRESHOLD_MS,
+        }
     }
 
     /// Пересчёт целевой latency и компенсаций. Вызывается под write-lock.
