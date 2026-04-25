@@ -1,9 +1,22 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zound</title>
+    <script>
+      // Применяем тему до первого кадра — иначе светлая тема мигает
+      // через тёмную при загрузке. Stylesheet ниже использует
+      // `:root[data-theme="light"]` override.
+      (function () {
+        try {
+          var t = localStorage.getItem("zound.theme");
+          if (t === "light" || t === "dark") {
+            document.documentElement.dataset.theme = t;
+          }
+        } catch (_) {}
+      })();
+    </script>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
@@ -12,6 +25,7 @@
         <img class="logo" src="logo.png" alt="Zound" />
       </div>
       <div class="controls">
+        <button id="theme-toggle" class="icon-btn" data-i18n-title="theme-toggle-title" aria-label="Toggle theme">🌓</button>
         <label for="lang" data-i18n="language-label">Язык</label>
         <select id="lang">
           <option value="ru" data-i18n="language-ru">Русский</option>
@@ -25,7 +39,10 @@
       <section class="panel">
         <div class="panel-head">
           <h2 data-i18n="nav-devices">Устройства</h2>
-          <span id="target-latency" class="badge"></span>
+          <div class="badges">
+            <span id="sync-status" class="badge sync-badge hidden"></span>
+            <span id="target-latency" class="badge"></span>
+          </div>
         </div>
         <label class="toggle">
           <input type="checkbox" id="show-all-devices" />

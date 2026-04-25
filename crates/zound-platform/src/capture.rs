@@ -267,14 +267,14 @@ mod linux {
         }
 
         let simple = Simple::new(
-            None,                    // сервер по умолчанию
-            APP_NAME,                // application name
-            Direction::Record,       //
-            Some(&monitor_source),   //
-            STREAM_NAME,             //
-            &spec,                   //
-            None,                    // default channel map
-            None,                    // default buffer attrs
+            None,                  // сервер по умолчанию
+            APP_NAME,              // application name
+            Direction::Record,     //
+            Some(&monitor_source), //
+            STREAM_NAME,           //
+            &spec,                 //
+            None,                  // default channel map
+            None,                  // default buffer attrs
         )
         .map_err(|e| Error::Backend(format!("pulse Simple::new({monitor_source}): {e}")))?;
 
@@ -379,10 +379,7 @@ mod linux {
         let op = context
             .introspect()
             .get_server_info(move |info: &ServerInfo| {
-                let name = info
-                    .default_sink_name
-                    .as_ref()
-                    .map(|s| s.to_string());
+                let name = info.default_sink_name.as_ref().map(|s| s.to_string());
                 *result_cb.borrow_mut() = Some(name);
             });
 
@@ -481,8 +478,7 @@ mod macos {
                     let slice = &bytes[i..end];
                     let n = slice.len() / 4;
                     for (k, chunk) in slice.chunks_exact(4).enumerate() {
-                        tmp[k] =
-                            f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                        tmp[k] = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                     }
                     let mut prod = self.producer.lock();
                     let pushed = prod.push_slice(&tmp[..n]);

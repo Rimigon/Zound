@@ -58,3 +58,27 @@ status-engine-stopped = Движок остановлен
 status-output-added = Устройство добавлено
 status-output-removed = Устройство убрано
 status-devices-refreshed = Список устройств обновлён
+
+# v0.3.0 — микшер, тест-сигнал, тема, drift, auto-reconnect.
+theme-toggle-title = Сменить тему
+mute-label = Без звука
+balance-l = Л
+balance-c = Ц
+balance-r = П
+balance-mono-note = Mono-устройство — баланс недоступен
+test-button-title = Тест-сигнал
+test-kind-click = Щелчок
+test-kind-sine = Синус 1 кГц
+test-kind-metronome = Метроном
+test-bpm-label = Темп, BPM
+test-start = Старт
+test-stop = Стоп
+test-running = { $kind } играет
+test-running-bpm = { $kind } { $bpm } BPM
+test-source-disabled = Нельзя — это источник захвата (loopback)
+sync-status-synced = синхронно
+sync-status-drift = дрейф { $ms } мс
+sync-status-na = —
+status-restore-ok = Сессия восстановлена
+status-restore-failed-one = Не найдено: { $name }
+status-restore-partial = Не восстановлено устройств: { $count }

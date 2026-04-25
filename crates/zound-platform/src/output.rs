@@ -4,7 +4,7 @@
 //! сэмплы внутреннего формата (f32, 48 kHz, stereo). Внутри callback-а
 //! они конвертируются в формат устройства.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -47,6 +47,9 @@ pub struct OutputSink {
     pub channels: u16,
     pub producer: HeapProd<f32>,
     pub volume: AtomicVolume,
+    /// Заглушка звука. При `true` callback пишет тишину независимо от volume.
+    /// Шарится с UI через `AudioEngine::set_muted`.
+    pub muted: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,8 +109,16 @@ pub fn open_output_by_name(device_name: &str, opts: OutputOpts) -> Result<Output
 
     let consumer = Arc::new(Mutex::new(consumer));
     let volume = AtomicVolume::new(1.0);
+    let muted = Arc::new(AtomicBool::new(false));
 
-    let stream = build_output_stream(&device, &config, format, consumer, volume.clone())?;
+    let stream = build_output_stream(
+        &device,
+        &config,
+        format,
+        consumer,
+        volume.clone(),
+        muted.clone(),
+    )?;
     stream
         .play()
         .map_err(|e| Error::Backend(format!("stream.play: {e}")))?;
@@ -124,6 +135,7 @@ pub fn open_output_by_name(device_name: &str, opts: OutputOpts) -> Result<Output
         channels,
         producer,
         volume,
+        muted,
     })
 }
 
@@ -134,6 +146,16 @@ pub fn open_output_by_name(device_name: &str, opts: OutputOpts) -> Result<Output
 /// в этом случае идём в CoreAudio FFI и берём nominal sample rate +
 /// количество каналов из stream configuration. Sample format фиксируем
 /// `F32` — CoreAudio внутри сделает конверсию.
+///
+/// `pub(crate)` — нужен `test_signal.rs`, чтобы открывать второй stream
+/// на устройстве с теми же параметрами.
+pub(crate) fn resolve_output_config_pub(
+    device: &cpal::Device,
+    device_name: &str,
+) -> Result<(u32, u16, SampleFormat)> {
+    resolve_output_config(device, device_name)
+}
+
 fn resolve_output_config(
     device: &cpal::Device,
     device_name: &str,
@@ -169,6 +191,7 @@ fn build_output_stream(
     format: SampleFormat,
     consumer: Arc<Mutex<HeapCons<f32>>>,
     volume: AtomicVolume,
+    muted: Arc<AtomicBool>,
 ) -> Result<Stream> {
     let err_cb = |e| tracing::error!(?e, "output stream error");
 
@@ -176,11 +199,19 @@ fn build_output_stream(
         ($ty:ty) => {{
             let cons = consumer.clone();
             let vol = volume.clone();
+            let mute = muted.clone();
             device
                 .build_output_stream(
                     config,
                     move |data: &mut [$ty], _info: &cpal::OutputCallbackInfo| {
-                        fill_output::<$ty>(cons.clone(), vol.get(), data);
+                        // Mute-проверка одна на чанк: если стоит — gain=0,
+                        // итог тот же (тишина), без branch'ей внутри loop.
+                        let gain = if mute.load(Ordering::Relaxed) {
+                            0.0
+                        } else {
+                            vol.get()
+                        };
+                        fill_output::<$ty>(cons.clone(), gain, data);
                     },
                     err_cb,
                     None,

@@ -57,3 +57,27 @@ status-engine-stopped = Engine stopped
 status-output-added = Output added
 status-output-removed = Output removed
 status-devices-refreshed = Device list refreshed
+
+# v0.3.0 — mixer, test signal, theme, drift, auto-reconnect.
+theme-toggle-title = Toggle theme
+mute-label = Mute
+balance-l = L
+balance-c = C
+balance-r = R
+balance-mono-note = Mono device — balance unavailable
+test-button-title = Test signal
+test-kind-click = Click
+test-kind-sine = 1 kHz Sine
+test-kind-metronome = Metronome
+test-bpm-label = Tempo, BPM
+test-start = Start
+test-stop = Stop
+test-running = { $kind } playing
+test-running-bpm = { $kind } { $bpm } BPM
+test-source-disabled = Cannot — this is the capture source
+sync-status-synced = synced
+sync-status-drift = drift { $ms } ms
+sync-status-na = —
+status-restore-ok = Session restored
+status-restore-failed-one = Not found: { $name }
+status-restore-partial = { $count } devices not restored

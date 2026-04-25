@@ -10,6 +10,7 @@ pub mod capture;
 pub mod cpal_backend;
 pub mod output;
 pub mod sample_convert;
+pub mod test_signal;
 
 #[cfg(target_os = "macos")]
 mod macos_devices;
@@ -18,3 +19,4 @@ pub use backend::AudioBackend;
 pub use capture::{open_default_loopback, Capture, CaptureOpts, CaptureSession};
 pub use cpal_backend::CpalBackend;
 pub use output::{open_output_by_name, AtomicVolume, OutputOpts, OutputSink};
+pub use test_signal::{start_test_stream, TestKind, TestStream};

@@ -287,9 +287,8 @@ fn cfstring_to_string(s: CFStringRef) -> Option<String> {
         return None;
     }
     let mut buffer = vec![0i8; max_bytes as usize];
-    let success = unsafe {
-        CFStringGetCString(s, buffer.as_mut_ptr(), max_bytes, kCFStringEncodingUTF8)
-    };
+    let success =
+        unsafe { CFStringGetCString(s, buffer.as_mut_ptr(), max_bytes, kCFStringEncodingUTF8) };
     if success == 0 {
         return None;
     }
