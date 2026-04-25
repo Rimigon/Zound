@@ -29,6 +29,9 @@ pub struct DeviceDto {
     pub sample_rate: u32,
     pub channels: u16,
     pub is_default: bool,
+    /// `true`, если устройство умеет только вход (микрофон, и т.п.).
+    /// UI прячет такие в дефолтном виде и блокирует кнопку «Добавить».
+    pub is_input_only: bool,
 }
 
 #[tauri::command]
@@ -44,8 +47,51 @@ pub fn list_outputs() -> Result<Vec<DeviceDto>, String> {
             sample_rate: d.sample_rate,
             channels: d.channels,
             is_default: d.is_default,
+            is_input_only: false,
         })
         .collect())
+}
+
+/// Все аудио-устройства системы — outputs + inputs. Используется
+/// настройкой UI «показать все устройства». Inputs приходят с флагом
+/// `is_input_only=true` и без output-`kind`-а; добавлять их как Zound-
+/// output нельзя (UI блокирует кнопку).
+#[tauri::command]
+pub fn list_all_devices() -> Result<Vec<DeviceDto>, String> {
+    use std::collections::HashSet;
+    let backend = CpalBackend::new();
+    let outputs = backend.enumerate_outputs().map_err(|e| e.to_string())?;
+    let inputs = backend.enumerate_inputs().map_err(|e| e.to_string())?;
+
+    let output_names: HashSet<String> = outputs.iter().map(|d| d.name.clone()).collect();
+    let mut result: Vec<DeviceDto> = outputs
+        .into_iter()
+        .map(|d| DeviceDto {
+            id: d.id.to_string(),
+            name: d.name,
+            kind: format!("{:?}", d.kind),
+            sample_rate: d.sample_rate,
+            channels: d.channels,
+            is_default: d.is_default,
+            is_input_only: false,
+        })
+        .collect();
+
+    // Дублирующие input-стороны duplex-устройств (одно и то же имя в обоих
+    // списках) уже попали как output — их пропускаем. В UI остаётся одна
+    // строка, она и так с кнопкой «Добавить».
+    for d in inputs.into_iter().filter(|d| !output_names.contains(&d.name)) {
+        result.push(DeviceDto {
+            id: d.id.to_string(),
+            name: d.name,
+            kind: format!("{:?}", d.kind),
+            sample_rate: d.sample_rate,
+            channels: d.channels,
+            is_default: d.is_default,
+            is_input_only: true,
+        });
+    }
+    Ok(result)
 }
 
 #[tauri::command]

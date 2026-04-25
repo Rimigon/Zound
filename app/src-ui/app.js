@@ -5,11 +5,14 @@ const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
 const state = {
   engineRunning: false,
   loopbackSource: null, // имя default-устройства, источник захвата
-  devices: [], // все output-устройства системы
+  devices: [], // устройства, отображённые сейчас в верхнем списке
   active: [], // {id, name, volume, latency_ms}
   lang: "ru",
   dict: {},
+  showAllDevices: false, // false → list_outputs, true → list_all_devices
 };
+
+const SHOW_ALL_KEY = "zound.showAllDevices";
 
 const DEVICE_REFRESH_INTERVAL_MS = 2000;
 
@@ -59,7 +62,8 @@ function devicesEqual(a, b) {
       a[i].name !== b[i].name ||
       a[i].sample_rate !== b[i].sample_rate ||
       a[i].channels !== b[i].channels ||
-      a[i].is_default !== b[i].is_default
+      a[i].is_default !== b[i].is_default ||
+      a[i].is_input_only !== b[i].is_input_only
     ) {
       return false;
     }
@@ -69,9 +73,10 @@ function devicesEqual(a, b) {
 
 async function refreshDevices(options = {}) {
   const { silent = false } = options;
+  const cmd = state.showAllDevices ? "list_all_devices" : "list_outputs";
   let next;
   try {
-    next = await invoke("list_outputs");
+    next = await invoke(cmd);
   } catch (e) {
     if (!silent) setStatus(String(e), "err");
     return;
@@ -91,12 +96,14 @@ function renderDevices() {
     const active = state.active.find((a) => a.id === d.id);
     const isSource =
       state.loopbackSource !== null && d.name === state.loopbackSource;
+    const inputOnly = !!d.is_input_only;
 
     const row = document.createElement("div");
     row.className =
       "device-row" +
       (d.is_default ? " default" : "") +
-      (isSource ? " source" : "");
+      (isSource ? " source" : "") +
+      (inputOnly ? " input-only" : "");
     row.innerHTML = `
       <div class="dot"></div>
       <div class="info">
@@ -115,9 +122,19 @@ function renderDevices() {
       badge.textContent = " · " + t("device-source-badge");
       meta.appendChild(badge);
     }
+    if (inputOnly) {
+      const badge = document.createElement("span");
+      badge.className = "input-badge";
+      badge.textContent = " · " + t("device-input-only-badge");
+      meta.appendChild(badge);
+    }
 
     const btn = row.querySelector("button");
-    if (isSource) {
+    if (inputOnly) {
+      btn.textContent = t("device-input-only-badge");
+      btn.disabled = true;
+      btn.title = t("device-input-only-note");
+    } else if (isSource) {
       btn.textContent = t("device-source-badge");
       btn.disabled = true;
       btn.title = t("device-source-note");
@@ -294,6 +311,18 @@ async function init() {
         await startEngine();
       }
     });
+
+  // Тоггл «показать все устройства» (включая input-only — микрофоны
+  // и т.п.). По умолчанию — только outputs. Состояние запоминаем
+  // в localStorage, чтобы пережить перезапуск.
+  const showAll = document.getElementById("show-all-devices");
+  state.showAllDevices = localStorage.getItem(SHOW_ALL_KEY) === "1";
+  showAll.checked = state.showAllDevices;
+  showAll.addEventListener("change", async (e) => {
+    state.showAllDevices = e.target.checked;
+    localStorage.setItem(SHOW_ALL_KEY, state.showAllDevices ? "1" : "0");
+    await refreshDevices({ silent: true });
+  });
 
   await loadDictionary(state.lang);
   // Считываем текущее состояние движка — на случай hot reload.

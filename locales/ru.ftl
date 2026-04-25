@@ -15,6 +15,9 @@ device-add = Добавить
 device-remove = Убрать
 device-source-badge = источник
 device-source-note = Источник захвата (loopback). Добавлять нельзя — будет обратная связь.
+device-input-only-badge = только вход
+device-input-only-note = Это устройство только для записи (микрофон). Как output его добавить нельзя.
+show-all-devices = Показывать все устройства (включая входы)
 no-active-outputs = Нет активных устройств. Добавьте хотя бы одно слева.
 doubling-note =
     Устройство по умолчанию продолжает играть системно. Дополнительные

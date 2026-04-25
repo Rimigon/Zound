@@ -58,15 +58,13 @@ body {
   gap: 12px;
 }
 
-.logo {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), #7d5cff);
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  color: white;
+.brand .logo {
+  display: block;
+  height: 56px;
+  width: auto;
+  /* Лого без фона — содержит сам Z + надпись Zound + слоган.
+     `object-fit: contain` страхует пропорции при вариативной высоте. */
+  object-fit: contain;
 }
 
 h1 {
@@ -79,6 +77,38 @@ h1 {
   margin: 0;
   font-size: 12px;
   color: var(--muted);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.device-row.input-only {
+  opacity: 0.7;
+  border-style: dashed;
+}
+
+.device-row.input-only .dot {
+  background: var(--muted);
+}
+
+.input-badge {
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
 }
 
 .controls {

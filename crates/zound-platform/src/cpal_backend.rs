@@ -57,46 +57,65 @@ impl AudioBackend for CpalBackend {
     }
 
     fn enumerate_outputs(&self) -> Result<Vec<DeviceInfo>> {
-        let default_name = self
-            .host
-            .default_output_device()
-            .and_then(|d| d.name().ok());
+        // На macOS обходим cpal: его фильтр через `default_output_config`
+        // выкидывает idle-устройства (DisplayPort, Built-in без активного
+        // стрима). Спрашиваем CoreAudio напрямую — см. `macos_devices`.
+        #[cfg(target_os = "macos")]
+        {
+            return crate::macos_devices::enumerate_outputs();
+        }
 
-        let devices = self
-            .host
-            .output_devices()
-            .map_err(|e| Error::Backend(e.to_string()))?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            let default_name = self
+                .host
+                .default_output_device()
+                .and_then(|d| d.name().ok());
 
-        Ok(devices
-            .map(|d| {
-                let is_default = default_name
-                    .as_deref()
-                    .zip(d.name().ok().as_deref())
-                    .map(|(a, b)| a == b)
-                    .unwrap_or(false);
-                self.describe(&d, is_default)
-            })
-            .collect())
+            let devices = self
+                .host
+                .output_devices()
+                .map_err(|e| Error::Backend(e.to_string()))?;
+
+            Ok(devices
+                .map(|d| {
+                    let is_default = default_name
+                        .as_deref()
+                        .zip(d.name().ok().as_deref())
+                        .map(|(a, b)| a == b)
+                        .unwrap_or(false);
+                    self.describe(&d, is_default)
+                })
+                .collect())
+        }
     }
 
     fn enumerate_inputs(&self) -> Result<Vec<DeviceInfo>> {
-        let default_name = self.host.default_input_device().and_then(|d| d.name().ok());
+        #[cfg(target_os = "macos")]
+        {
+            return crate::macos_devices::enumerate_inputs();
+        }
 
-        let devices = self
-            .host
-            .input_devices()
-            .map_err(|e| Error::Backend(e.to_string()))?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            let default_name = self.host.default_input_device().and_then(|d| d.name().ok());
 
-        Ok(devices
-            .map(|d| {
-                let is_default = default_name
-                    .as_deref()
-                    .zip(d.name().ok().as_deref())
-                    .map(|(a, b)| a == b)
-                    .unwrap_or(false);
-                self.describe(&d, is_default)
-            })
-            .collect())
+            let devices = self
+                .host
+                .input_devices()
+                .map_err(|e| Error::Backend(e.to_string()))?;
+
+            Ok(devices
+                .map(|d| {
+                    let is_default = default_name
+                        .as_deref()
+                        .zip(d.name().ok().as_deref())
+                        .map(|(a, b)| a == b)
+                        .unwrap_or(false);
+                    self.describe(&d, is_default)
+                })
+                .collect())
+        }
     }
 
     fn default_output(&self) -> Result<DeviceInfo> {

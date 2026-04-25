@@ -25,5 +25,11 @@ libpulse-simple-binding = "2.28"
 
 # macOS 13+: системный loopback через ScreenCaptureKit
 # (CoreAudio не даёт loopback без kext-а / виртуального драйвера).
+# coreaudio-sys / core-foundation-sys — прямой обход CoreAudio для энумерации
+# устройств: `cpal::Host::output_devices()` на macOS фильтрует через
+# `default_output_config().is_ok()`, что выкидывает idle-выходы (DisplayPort,
+# Built-in, когда они не активны) — идём в обход.
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = "1.5"
+coreaudio-sys = { version = "0.2", default-features = false, features = ["audio_unit", "core_audio"] }
+core-foundation-sys = "0.8"

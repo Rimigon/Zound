@@ -68,6 +68,7 @@ fn run_tauri() {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::list_outputs,
+            commands::list_all_devices,
             commands::start_engine,
             commands::stop_engine,
             commands::engine_status,

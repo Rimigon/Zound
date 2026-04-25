@@ -70,19 +70,24 @@ impl Default for OutputOpts {
 /// `DeviceTrait::name`). Мы используем имя как ID в MVP — см. `cpal_backend.rs`.
 pub fn open_output_by_name(device_name: &str, opts: OutputOpts) -> Result<OutputSink> {
     let host = cpal::default_host();
+    // На macOS используем `host.devices()` (без фильтра), потому что
+    // cpal-овский `output_devices()` выкидывает idle-устройства
+    // (DisplayPort, Built-in без активного стрима) — а мы их теперь
+    // показываем в списке через прямой обход CoreAudio.
+    #[cfg(target_os = "macos")]
+    let mut devices = host
+        .devices()
+        .map_err(|e| Error::Backend(format!("devices: {e}")))?;
+    #[cfg(not(target_os = "macos"))]
     let mut devices = host
         .output_devices()
         .map_err(|e| Error::Backend(format!("output_devices: {e}")))?;
+
     let device = devices
         .find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
         .ok_or_else(|| Error::DeviceNotFound(device_name.to_string()))?;
 
-    let supported = device
-        .default_output_config()
-        .map_err(|e| Error::Backend(format!("default_output_config: {e}")))?;
-    let sample_rate = supported.sample_rate().0;
-    let channels = supported.channels();
-    let format = supported.sample_format();
+    let (sample_rate, channels, format) = resolve_output_config(&device, device_name)?;
 
     let config = cpal::StreamConfig {
         channels,
@@ -120,6 +125,42 @@ pub fn open_output_by_name(device_name: &str, opts: OutputOpts) -> Result<Output
         producer,
         volume,
     })
+}
+
+/// Достаём (sample_rate, channels, sample_format) для устройства.
+///
+/// Обычно через `cpal::Device::default_output_config()`. На macOS он падает
+/// для idle-устройств (DisplayPort, Built-in, когда выбран другой default) —
+/// в этом случае идём в CoreAudio FFI и берём nominal sample rate +
+/// количество каналов из stream configuration. Sample format фиксируем
+/// `F32` — CoreAudio внутри сделает конверсию.
+fn resolve_output_config(
+    device: &cpal::Device,
+    device_name: &str,
+) -> Result<(u32, u16, SampleFormat)> {
+    match device.default_output_config() {
+        Ok(supported) => Ok((
+            supported.sample_rate().0,
+            supported.channels(),
+            supported.sample_format(),
+        )),
+        Err(err) => {
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(id) = crate::macos_devices::find_device_id_by_name(device_name) {
+                    if let Some((sr, ch)) = crate::macos_devices::output_format(id) {
+                        tracing::debug!(
+                            device = %device_name, sr, ch,
+                            "default_output_config failed; CoreAudio FFI fallback"
+                        );
+                        return Ok((sr, ch, SampleFormat::F32));
+                    }
+                }
+            }
+            let _ = device_name;
+            Err(Error::Backend(format!("default_output_config: {err}")))
+        }
+    }
 }
 
 fn build_output_stream(

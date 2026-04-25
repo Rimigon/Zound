@@ -567,6 +567,14 @@ mod macos {
             "ScreenCaptureKit loopback capture started"
         );
 
+        // Для блокера feedback-loop нужно реальное имя текущего дефолтного
+        // output (SCK тапит системный звук независимо от устройства; если
+        // юзер добавит этот же дефолт как Zound-output — задвоится).
+        // Если CoreAudio дефолт не возвращает — оставляем константу
+        // (блокер тогда просто не сработает, как было).
+        let source_name = crate::macos_devices::default_output_device_name()
+            .unwrap_or_else(|| "system audio (ScreenCaptureKit)".into());
+
         Ok(Capture {
             session: CaptureSession {
                 _handle: Box::new(MacHandle {
@@ -574,7 +582,7 @@ mod macos {
                 }),
                 channels,
                 sample_rate,
-                source_name: "system audio (ScreenCaptureKit)".into(),
+                source_name,
             },
             consumer,
         })
