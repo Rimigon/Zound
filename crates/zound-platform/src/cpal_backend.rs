@@ -72,7 +72,7 @@ impl AudioBackend for CpalBackend {
         // стрима). Спрашиваем CoreAudio напрямую — см. `macos_devices`.
         #[cfg(target_os = "macos")]
         {
-            return crate::macos_devices::enumerate_outputs();
+            crate::macos_devices::enumerate_outputs()
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -122,7 +122,7 @@ impl AudioBackend for CpalBackend {
     fn enumerate_inputs(&self) -> Result<Vec<DeviceInfo>> {
         #[cfg(target_os = "macos")]
         {
-            return crate::macos_devices::enumerate_inputs();
+            crate::macos_devices::enumerate_inputs()
         }
 
         #[cfg(not(target_os = "macos"))]

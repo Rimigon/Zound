@@ -47,12 +47,8 @@ pub fn enumerate_inputs() -> Result<Vec<DeviceInfo>> {
 /// устройств, у которых cpal-овский `default_output_config` падает.
 pub fn find_device_id_by_name(name: &str) -> Option<AudioObjectID> {
     let ids = list_all_device_ids().ok()?;
-    for id in ids {
-        if device_name(id).as_deref() == Some(name) {
-            return Some(id);
-        }
-    }
-    None
+    ids.into_iter()
+        .find(|&id| device_name(id).as_deref() == Some(name))
 }
 
 /// Обратная сторона: имя устройства по его AudioObjectID. Используется
