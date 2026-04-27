@@ -153,7 +153,10 @@ enum EngineCmd {
     /// Soft-restart capture: при смене default-устройства watcher шлёт
     /// эту команду; engine закрывает текущий capture и пытается открыть
     /// новый default. Не путать с `StopCapture` + `Start` — здесь все
-    /// уже добавленные outputs остаются на месте.
+    /// уже добавленные outputs остаются на месте. Сейчас отправляется
+    /// только из `DefaultDeviceWatcher` (Windows-only); на остальных
+    /// платформах сам вариант не конструируется и помечен dead-code-allow.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     RestartCapture,
     Shutdown,
 }
