@@ -76,10 +76,14 @@ fn session_profile_in_temp_dir() {
         master_muted: false,
         devices: vec![DevicePreset {
             name: "X-Y/Z".into(),
+            endpoint_id: Some("test-endpoint:1".into()),
             volume: 0.6,
             muted: true,
             balance: 0.1,
             latency_ms: 33,
+            eq_low_db: 0.0,
+            eq_mid_db: 4.0,
+            eq_high_db: -3.0,
         }],
         ..SessionProfile::default()
     };
@@ -152,11 +156,15 @@ fn audio_engine_handles_remove_of_unknown_device() {
 }
 
 #[test]
-fn audio_engine_set_volume_unknown_returns_error() {
+fn audio_engine_set_volume_unknown_is_silent_warning() {
+    // P1.6 — set_volume стал fire-and-forget. Ошибки (device not found)
+    // ловятся в audio-thread и пишутся в `tracing::warn!`, не возвращаются
+    // наружу. UI-сторона остаётся отзывчивой на каждое движение слайдера.
     let sync = Arc::new(SyncEngine::new());
     let outputs = Arc::new(OutputManager::new());
     let engine = AudioEngine::new(sync, outputs);
-    let err = engine.set_volume(&DeviceId::from("nope"), 0.5);
-    assert!(err.is_err());
+    engine.set_volume(&DeviceId::from("nope"), 0.5);
+    // Engine остаётся жив.
+    assert!(engine.health().is_alive());
     drop(engine);
 }

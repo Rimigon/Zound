@@ -12,87 +12,10 @@ use fluent_bundle::{FluentArgs, FluentResource, FluentValue};
 use parking_lot::RwLock;
 use unic_langid::langid;
 
-/// Ключи, которые Frontend ждёт в словаре. Держим явный список, чтобы
-/// перевод гарантированно покрывал весь UI и ломалось на этапе review,
-/// а не в рантайме.
-const KEYS: &[&str] = &[
-    "app-title",
-    "app-subtitle",
-    "nav-devices",
-    "nav-sync",
-    "nav-settings",
-    "engine-start",
-    "engine-stop",
-    "device-add",
-    "device-remove",
-    "device-source-badge",
-    "device-source-note",
-    "device-input-only-badge",
-    "device-input-only-note",
-    "show-all-devices",
-    "no-active-outputs",
-    "doubling-note",
-    "sync-hint",
-    "sync-target-latency",
-    "volume-label",
-    "balance-label",
-    "latency-label",
-    "language-label",
-    "language-ru",
-    "language-en",
-    "status-ready",
-    "status-engine-started",
-    "status-engine-stopped",
-    "status-output-added",
-    "status-output-removed",
-    "status-devices-refreshed",
-    "feedback-default-blocked",
-    // v0.3.0 — mixer, test-signal, theme, drift, auto-reconnect.
-    "theme-toggle-title",
-    "mute-label",
-    "balance-l",
-    "balance-c",
-    "balance-r",
-    "balance-mono-note",
-    "test-button-title",
-    "test-kind-click",
-    "test-kind-sine",
-    "test-kind-metronome",
-    "test-bpm-label",
-    "test-start",
-    "test-stop",
-    "test-running",
-    "test-running-bpm",
-    "test-source-disabled",
-    "sync-status-synced",
-    "sync-status-drift",
-    "sync-status-na",
-    "status-restore-ok",
-    "status-restore-failed-one",
-    "status-restore-partial",
-    // v0.4 — master + peak meters + linked latencies.
-    "master-label",
-    "master-mute",
-    "peak-label",
-    "latency-link-label",
-    "latency-link-title",
-    "default-source-warning",
-    // v0.5 — EQ, groups, sparkline.
-    "eq-toggle",
-    "eq-low",
-    "eq-mid",
-    "eq-high",
-    "eq-reset",
-    "device-reset",
-    "device-reset-title",
-    "group-label",
-    "group-none",
-    "group-new",
-    "group-new-prompt",
-    "group-volume",
-    "group-mute",
-    "group-latency",
-];
+// Список ключей теперь генерируется build-script'ом из `locales/*.ftl`
+// (см. `app/build.rs::generate_i18n_keys`). Паритет ru↔en проверяется
+// на этапе сборки.
+include!(concat!(env!("OUT_DIR"), "/i18n_keys.rs"));
 
 type Bundle = FluentBundle<FluentResource>;
 

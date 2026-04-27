@@ -49,4 +49,11 @@ pub struct DeviceInfo {
     pub channels: u16,
     /// Является ли дефолтным устройством системы.
     pub is_default: bool,
+    /// Стабильный backend-id, переживающий переименование устройства в ОС:
+    /// WASAPI endpoint id (`{0.0.0.00000000}.{guid}`), CoreAudio
+    /// `AudioObjectID` стрингифицированный, PipeWire/Pulse — node/sink name.
+    /// `None` — backend не смог его получить (например, на Linux без
+    /// прямой PipeWire-интеграции). В этом случае матчинг профиля идёт по
+    /// `name` как fallback.
+    pub endpoint_id: Option<String>,
 }

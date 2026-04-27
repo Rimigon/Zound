@@ -1,14 +1,113 @@
-//! Build-script. Tauri требует `icons/icon.ico` на Windows для
-//! встраивания в Windows Resource. Если файла нет — генерируем 16x16
-//! placeholder с фирменным синим цветом Zound. Настоящая иконка
-//! появится, когда будет готова графика.
+//! Build-script. Делает три вещи:
+//!
+//! 1. Генерирует placeholder `icons/icon.ico` если его нет.
+//! 2. Парсит `locales/en.ftl` и `locales/ru.ftl`, генерирует
+//!    `OUT_DIR/i18n_keys.rs` с `KEYS` для `i18n.rs`. Так список ключей
+//!    больше не дублируется руками — паритет ru↔en проверяется на
+//!    этапе сборки и роняет компиляцию при расхождении.
+//! 3. Вызывает `tauri_build::build()` для встраивания ресурсов.
 
+use std::collections::BTreeSet;
+use std::env;
 use std::fs;
 use std::path::Path;
 
 fn main() {
     ensure_placeholder_icons();
+    generate_i18n_keys();
     tauri_build::build();
+}
+
+/// Парсит .ftl-файлы и пишет в `OUT_DIR/i18n_keys.rs`:
+///
+/// ```ignore
+/// pub const KEYS: &[&str] = &["app-title", "app-subtitle", ...];
+/// ```
+///
+/// Если en и ru расходятся по набору ключей — `panic!` на стадии build,
+/// то есть `cargo check` сразу красный и нельзя случайно зарелизить
+/// приложение с пустыми переводами. Парсер тривиальный (top-level
+/// `<id> = ...`), но он корректен для нашего использования fluent —
+/// атрибутов и selector-ов в `.ftl` мы не используем.
+fn generate_i18n_keys() {
+    let en_path = Path::new("../locales/en.ftl");
+    let ru_path = Path::new("../locales/ru.ftl");
+    println!("cargo:rerun-if-changed=../locales/en.ftl");
+    println!("cargo:rerun-if-changed=../locales/ru.ftl");
+
+    let en_src = fs::read_to_string(en_path).expect("read locales/en.ftl");
+    let ru_src = fs::read_to_string(ru_path).expect("read locales/ru.ftl");
+
+    let en_keys = parse_ftl_message_ids(&en_src);
+    let ru_keys = parse_ftl_message_ids(&ru_src);
+
+    let missing_in_ru: Vec<&String> = en_keys.difference(&ru_keys).collect();
+    let missing_in_en: Vec<&String> = ru_keys.difference(&en_keys).collect();
+    if !missing_in_ru.is_empty() || !missing_in_en.is_empty() {
+        panic!(
+            "i18n parity broken: missing in ru.ftl = {missing_in_ru:?}, missing in en.ftl = {missing_in_en:?}"
+        );
+    }
+
+    let mut all: Vec<String> = en_keys.into_iter().collect();
+    all.sort();
+    let mut out = String::from(
+        "// Auto-generated from locales/*.ftl by app/build.rs.\n\
+         // Do not edit by hand.\n\
+         pub const KEYS: &[&str] = &[\n",
+    );
+    for k in &all {
+        out.push_str("    \"");
+        out.push_str(k);
+        out.push_str("\",\n");
+    }
+    out.push_str("];\n");
+
+    let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR set by cargo");
+    let dest = Path::new(&out_dir).join("i18n_keys.rs");
+    fs::write(&dest, out).expect("write i18n_keys.rs");
+}
+
+/// Возвращает множество top-level message-id из FTL-файла. Top-level —
+/// это идентификатор слева от `=`, без точки (атрибуты — `key.attr =`)
+/// и не начинающийся с `-` (термы). Multiline-значения и комментарии
+/// (`#`) пропускаем естественным образом — мы матчим только строки,
+/// начинающиеся с буквы и содержащие `=`.
+fn parse_ftl_message_ids(src: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+        // Только строки, не начинающиеся с пробела/комментария/терма —
+        // это и есть top-level message id (continuation-строки идут с
+        // отступом по правилам Fluent).
+        if line != trimmed {
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('-') {
+            continue;
+        }
+        if let Some(eq_idx) = trimmed.find('=') {
+            let id = trimmed[..eq_idx].trim();
+            // Атрибуты (`key.attr = ...`) пропускаем — нам нужен только
+            // основной message-id.
+            if id.contains('.') {
+                continue;
+            }
+            // Валидный fluent id: [a-zA-Z][a-zA-Z0-9_-]*.
+            if id
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic())
+                .unwrap_or(false)
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                out.insert(id.to_string());
+            }
+        }
+    }
+    out
 }
 
 fn ensure_placeholder_icons() {

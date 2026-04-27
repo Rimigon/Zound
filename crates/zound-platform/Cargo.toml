@@ -16,6 +16,20 @@ thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 
+# Windows: WASAPI endpoint id через IMMDeviceEnumerator (стабильный
+# идентификатор, переживающий переименование устройства). cpal сам по
+# себе отдаёт только display-name — нам нужно больше.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
+
 # Linux: системный loopback через monitor-source PulseAudio/PipeWire.
 # PipeWire предоставляет Pulse-совместимый API — один код работает и там, и там.
 # Требует libpulse-dev при сборке.

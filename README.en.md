@@ -44,6 +44,54 @@ manual latency compensation, and a switchable UI (Russian / English).
 - 🌐 Language switch ru/en (Project Fluent, `.ftl` dictionaries).
 - 🧪 **`--self-test`** — headless smoke check used by CI.
 
+## What's new in 0.4.1
+
+Project audit closed 15 items (P1 bugs + P2 structural improvements) in
+one release:
+
+- **Stable backend device id.** WASAPI endpoint id
+  (`{0.0.0.00000000}.{guid}`) on Windows via `IMMDeviceEnumerator`;
+  stringified `AudioObjectID` on macOS. Session profile matches by
+  endpoint_id first and falls back to name — renames and duplicate
+  names no longer break restore.
+- **Output disconnect watchdog.** If a device drops >50 % of pushes
+  for 200 worker ticks (~2 s) in a row, the engine drops the output,
+  emits an `OutputDisconnected` event, and the UI removes the row.
+- **System default device change subscription (Windows).** Poller on
+  `IMMDeviceEnumerator::GetDefaultAudioEndpoint`, soft-restart of
+  capture on change. The UI shows a "default changed" banner.
+- **`catch_unwind` around the audio thread.** Panics no longer kill
+  the process or hang `Drop::join`: caught, `engine_status.alive=false`
+  exposed, UI shows "engine died, please restart".
+- **Drift via `rubato::set_resample_ratio_relative`.** Drop/dup of
+  frames is gone; tone signals don't drift in pitch. Linear stretch
+  fallback remains for devices without a resampler.
+- **Fire-and-forget Tauri commands.** Volume / mute / balance / EQ /
+  master no longer block the UI on a channel reply — sliders stay
+  responsive even when the audio thread is mid-chunk.
+- **EQ in the session profile.** Low/mid/high gain (dB) is serialized
+  alongside volume / mute / balance / latency and survives restarts.
+- **`CommandError` enum.** Tauri commands return `{kind, message}`
+  instead of flat strings; the frontend `switch`es on `kind`, no more
+  substring parsing.
+- **Unified `DevicePreset`.** `ProfileDeviceDto` is gone — one struct
+  with `serde(rename_all = "camelCase")` covers both wire and disk.
+- **i18n keys generated from FTL.** `app/build.rs` parses
+  `locales/*.ftl`, emits `KEYS` into `OUT_DIR`, and verifies ru↔en
+  parity at build time.
+- **Frontend ES modules.** `app.js` (1100+ lines) is split into
+  `state / ipc / i18n / theme / status / devices / mixer / sync /
+  tests / session / events`. No bundler — just `<script type="module">`.
+- **Minimal Tauri capabilities.** Only `core:default`, no
+  `fs/http/shell/dialog` plugins. The `main` window is named explicitly.
+- **Content Security Policy.** `default-src 'self'`, `script-src 'self'`,
+  `connect-src 'self' ipc: http://ipc.localhost`, `object-src 'none'`.
+- **DriftCorrector kp/ki documented + step-response test.** A comment
+  with the stability derivation and a unit test that asserts the
+  ramp is monotonic and capped.
+- **Rate-limited drop warning.** Accumulated dropped samples are
+  reported once per second per device, not on every tick.
+
 ## What's new in 0.4.0
 
 - **3-band EQ per device.** Low-shelf 100 Hz, peak 1 kHz, high-shelf

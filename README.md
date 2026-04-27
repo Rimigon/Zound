@@ -45,6 +45,54 @@
 - 🌐 Переключатель языка ru/en (Project Fluent, `.ftl` словари).
 - 🧪 **`--self-test`** — headless smoke-проверка пайплайна для CI.
 
+## Что нового в 0.4.1
+
+Аудит проекта закрыл 15 пунктов P1 (баги) + P2 (структурные улучшения)
+одним релизом:
+
+- **Стабильный backend-id для устройств.** На Windows тянем
+  WASAPI endpoint id (`{0.0.0.00000000}.{guid}`) через
+  `IMMDeviceEnumerator`; на macOS — стрингифицированный
+  `AudioObjectID`. Session profile теперь матчит устройство сначала по
+  endpoint_id, потом по имени — переименование/одинаковые имена больше
+  не ломают восстановление.
+- **Watchdog отключения устройства.** Если push в ringbuf >50 % теряет
+  на протяжении 200 worker-tick'ов подряд (~2 сек), engine снимает
+  output, эмитит `OutputDisconnected`-event, фронт убирает плашку.
+- **Подписка на смену системного default (Windows).** Поллер на
+  `IMMDeviceEnumerator::GetDefaultAudioEndpoint`, soft-restart capture
+  при изменении. UI получает баннер «default changed».
+- **`catch_unwind` в audio-thread.** Panic больше не убивает процесс
+  и не вешает `Drop::join`: ловим, помечаем `engine_status.alive=false`,
+  фронт показывает «engine died, please restart».
+- **Drift через `rubato::set_resample_ratio_relative`.** Убран
+  drop/dup кадров; на тон-сигналах нет pitch-плывения. Fallback на
+  линейный stretch остался для устройств без ресемплера.
+- **Fire-and-forget Tauri-команды.** Volume / mute / balance / EQ /
+  master больше не блокируют UI на channel reply — слайдеры остаются
+  отзывчивыми даже если audio-thread занят большим chunk'ом.
+- **EQ в session profile.** Полосы low/mid/high (dB) сериализуются
+  вместе с volume / mute / balance / latency и переживают перезапуск.
+- **`CommandError` enum.** Tauri-команды отдают
+  `{kind, message}` вместо плоских строк; фронт делает `switch` по
+  `kind`, парсинг подстрок ушёл.
+- **Один `DevicePreset`.** Слили `ProfileDeviceDto` и `DevicePreset` в
+  одну структуру с `serde(rename_all = "camelCase")`.
+- **i18n keys из FTL.** `app/build.rs` парсит `locales/*.ftl`, генерит
+  `KEYS` в `OUT_DIR`, проверяет паритет ru↔en на этапе сборки.
+- **Frontend: ES-модули.** `app.js` (1100+ строк) разбит на
+  `state / ipc / i18n / theme / status / devices / mixer / sync /
+  tests / session / events`. Бандлер не подключаем — `<script type="module">`.
+- **Tauri capabilities.** Минимальный набор: только `core:default`,
+  никаких `fs/http/shell/dialog`. Окно `main` фигурирует явно.
+- **Content Security Policy.** `default-src 'self'`, `script-src 'self'`,
+  `connect-src 'self' ipc: http://ipc.localhost`, `object-src 'none'`.
+- **DriftCorrector kp/ki: расчёт-обоснование + step-response тест.**
+  Комментарий с расчётом устойчивости и unit-тест, проверяющий
+  монотонную раскачку коррекции и cap.
+- **Rate-limited drop-warning.** Накопленные dropped-семплы логируются
+  раз в секунду на устройство, а не на каждый тик.
+
 ## Что нового в 0.4.0
 
 - **3-полосный EQ per device.** Low-shelf 100 Гц, peak 1 кГц, high-shelf

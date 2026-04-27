@@ -43,6 +43,10 @@ pub struct OutputSink {
     _stream: Stream,
     pub device_id: DeviceId,
     pub device_name: String,
+    /// Стабильный backend-id, если backend смог его получить (см.
+    /// `DeviceInfo::endpoint_id`). Сохраняется в session profile для
+    /// последующего восстановления — переживает переименование.
+    pub endpoint_id: Option<String>,
     pub sample_rate: u32,
     pub channels: u16,
     pub producer: HeapProd<f32>,
@@ -50,6 +54,25 @@ pub struct OutputSink {
     /// Заглушка звука. При `true` callback пишет тишину независимо от volume.
     /// Шарится с UI через `AudioEngine::set_muted`.
     pub muted: Arc<AtomicBool>,
+}
+
+/// Описывает целевое output-устройство для `open_output_by_endpoint`.
+/// Если задан `endpoint_id`, ищем сначала по нему (через backend);
+/// при неуспехе fallback к `name`. Это ключ к корректной сериализации
+/// профилей: переименование устройства не разрывает привязку.
+#[derive(Debug, Clone)]
+pub struct EndpointSpec {
+    pub name: String,
+    pub endpoint_id: Option<String>,
+}
+
+impl EndpointSpec {
+    pub fn by_name(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            endpoint_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -69,28 +92,62 @@ impl Default for OutputOpts {
     }
 }
 
-/// Открыть output на устройстве по его имени (то, что cpal отдаёт через
-/// `DeviceTrait::name`). Мы используем имя как ID в MVP — см. `cpal_backend.rs`.
+/// Открыть output на устройстве по его имени. Чистый legacy-фасад над
+/// [`open_output_by_endpoint`] без stable-id.
 pub fn open_output_by_name(device_name: &str, opts: OutputOpts) -> Result<OutputSink> {
+    open_output_by_endpoint(&EndpointSpec::by_name(device_name), opts)
+}
+
+/// Открыть output по [`EndpointSpec`]. Если задан `endpoint_id` — ищем
+/// его через backend-overlay; иначе матчим по имени. На fallback пути
+/// (id указан, но не найден — например, после переустановки драйверов)
+/// возвращаемся к поиску по `name` и логируем `tracing::warn!`.
+pub fn open_output_by_endpoint(spec: &EndpointSpec, opts: OutputOpts) -> Result<OutputSink> {
     let host = cpal::default_host();
     // На macOS используем `host.devices()` (без фильтра), потому что
     // cpal-овский `output_devices()` выкидывает idle-устройства
     // (DisplayPort, Built-in без активного стрима) — а мы их теперь
     // показываем в списке через прямой обход CoreAudio.
     #[cfg(target_os = "macos")]
-    let mut devices = host
+    let devices_iter = host
         .devices()
         .map_err(|e| Error::Backend(format!("devices: {e}")))?;
     #[cfg(not(target_os = "macos"))]
-    let mut devices = host
+    let devices_iter = host
         .output_devices()
         .map_err(|e| Error::Backend(format!("output_devices: {e}")))?;
 
-    let device = devices
-        .find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
-        .ok_or_else(|| Error::DeviceNotFound(device_name.to_string()))?;
+    let all_devices: Vec<cpal::Device> = devices_iter.collect();
 
-    let (sample_rate, channels, format) = resolve_output_config(&device, device_name)?;
+    // Стратегия: 1) пробуем endpoint_id через backend overlay, получаем
+    // friendly-name, ищем cpal-устройство с этим именем. 2) фоллбэк на
+    // прямое сравнение имени.
+    let resolved_name = resolve_target_name(spec);
+    let device_name = resolved_name.as_deref().unwrap_or(spec.name.as_str());
+
+    let device = all_devices
+        .iter()
+        .find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
+        .or_else(|| {
+            // Не нашли по resolved-имени (id привёл к неожиданному имени) —
+            // последняя попытка по исходному имени из спецификации.
+            if device_name == spec.name {
+                None
+            } else {
+                tracing::warn!(
+                    requested_id = ?spec.endpoint_id,
+                    resolved_to = device_name,
+                    fallback_name = %spec.name,
+                    "endpoint resolved to unknown name; falling back"
+                );
+                all_devices
+                    .iter()
+                    .find(|d| d.name().map(|n| n == spec.name).unwrap_or(false))
+            }
+        })
+        .ok_or_else(|| Error::DeviceNotFound(spec.name.clone()))?;
+
+    let (sample_rate, channels, format) = resolve_output_config(device, device_name)?;
 
     let config = cpal::StreamConfig {
         channels,
@@ -112,7 +169,7 @@ pub fn open_output_by_name(device_name: &str, opts: OutputOpts) -> Result<Output
     let muted = Arc::new(AtomicBool::new(false));
 
     let stream = build_output_stream(
-        &device,
+        device,
         &config,
         format,
         consumer,
@@ -124,19 +181,78 @@ pub fn open_output_by_name(device_name: &str, opts: OutputOpts) -> Result<Output
         .map_err(|e| Error::Backend(format!("stream.play: {e}")))?;
 
     let resolved_name = device.name().unwrap_or_else(|_| device_name.to_string());
+    let endpoint_id = current_endpoint_id_for(&resolved_name).or_else(|| spec.endpoint_id.clone());
 
-    tracing::info!(%sample_rate, %channels, ?format, name = %resolved_name, "output started");
+    tracing::info!(
+        %sample_rate, %channels, ?format, name = %resolved_name,
+        endpoint_id = ?endpoint_id,
+        "output started"
+    );
 
     Ok(OutputSink {
         _stream: stream,
         device_id: DeviceId::from(resolved_name.clone()),
         device_name: resolved_name,
+        endpoint_id,
         sample_rate,
         channels,
         producer,
         volume,
         muted,
     })
+}
+
+/// Если в [`EndpointSpec`] задан endpoint_id — пробуем спросить backend,
+/// какому имени он сейчас соответствует. На Windows проверяем
+/// `endpoint_id_map()` (в обратном порядке: id → name). На остальных
+/// платформах endpoint_id != name редко, поэтому возвращаем None.
+fn resolve_target_name(spec: &EndpointSpec) -> Option<String> {
+    let id = spec.endpoint_id.as_ref()?;
+    #[cfg(target_os = "windows")]
+    {
+        let map = crate::windows_endpoints::endpoint_id_map();
+        for (name, eid) in map {
+            if &eid == id {
+                return Some(name);
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // coreaudio:<AudioObjectID>
+        if let Some(num) = id.strip_prefix("coreaudio:") {
+            if let Ok(parsed) = num.parse::<u32>() {
+                return crate::macos_devices::device_name_by_id(parsed);
+            }
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = id;
+        None
+    }
+}
+
+/// Текущий endpoint_id для устройства с именем `name` — для записи в
+/// `OutputSink` и последующего сохранения в session profile.
+fn current_endpoint_id_for(name: &str) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows_endpoints::endpoint_id_map()
+            .get(name)
+            .cloned()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_devices::find_device_id_by_name(name).map(|id| format!("coreaudio:{id}"))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = name;
+        None
+    }
 }
 
 /// Достаём (sample_rate, channels, sample_format) для устройства.

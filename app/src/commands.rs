@@ -6,15 +6,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::State;
 
 use zound_core::DeviceId;
-use zound_output::{AudioEngine, DevicePreset, OutputManager, SessionProfile};
-use zound_platform::{AudioBackend, CpalBackend, TestKind};
+use zound_output::{AudioEngine, CommandError, DevicePreset, OutputManager, SessionProfile};
+use zound_platform::{AudioBackend, CpalBackend, EndpointSpec, TestKind};
 use zound_sync::SyncEngine;
 
 use crate::i18n::I18n;
+
+/// Тип Result для всех команд: ошибка идёт во фронт как структурированный
+/// объект `{kind, message}` (P2.8). Frontend matches по `kind`.
+type CmdResult<T> = Result<T, CommandError>;
 
 /// Состояние, которое Tauri-handler получает через `State<AppState>`.
 pub struct AppState {
@@ -31,9 +35,13 @@ pub struct AppState {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceDto {
     pub id: String,
     pub name: String,
+    /// Стабильный backend-id (см. [`zound_core::DeviceInfo::endpoint_id`]).
+    /// Frontend сохраняет его в session profile вместе с именем.
+    pub endpoint_id: Option<String>,
     pub kind: String,
     pub sample_rate: u32,
     pub channels: u16,
@@ -44,14 +52,17 @@ pub struct DeviceDto {
 }
 
 #[tauri::command]
-pub fn list_outputs() -> Result<Vec<DeviceDto>, String> {
+pub fn list_outputs() -> CmdResult<Vec<DeviceDto>> {
     let backend = CpalBackend::new();
-    let devices = backend.enumerate_outputs().map_err(|e| e.to_string())?;
+    let devices = backend
+        .enumerate_outputs()
+        .map_err(|e| CommandError::backend(e.to_string()))?;
     Ok(devices
         .into_iter()
         .map(|d| DeviceDto {
             id: d.id.to_string(),
             name: d.name,
+            endpoint_id: d.endpoint_id,
             kind: format!("{:?}", d.kind),
             sample_rate: d.sample_rate,
             channels: d.channels,
@@ -66,11 +77,15 @@ pub fn list_outputs() -> Result<Vec<DeviceDto>, String> {
 /// `is_input_only=true` и без output-`kind`-а; добавлять их как Zound-
 /// output нельзя (UI блокирует кнопку).
 #[tauri::command]
-pub fn list_all_devices() -> Result<Vec<DeviceDto>, String> {
+pub fn list_all_devices() -> CmdResult<Vec<DeviceDto>> {
     use std::collections::HashSet;
     let backend = CpalBackend::new();
-    let outputs = backend.enumerate_outputs().map_err(|e| e.to_string())?;
-    let inputs = backend.enumerate_inputs().map_err(|e| e.to_string())?;
+    let outputs = backend
+        .enumerate_outputs()
+        .map_err(|e| CommandError::backend(e.to_string()))?;
+    let inputs = backend
+        .enumerate_inputs()
+        .map_err(|e| CommandError::backend(e.to_string()))?;
 
     let output_names: HashSet<String> = outputs.iter().map(|d| d.name.clone()).collect();
     let mut result: Vec<DeviceDto> = outputs
@@ -78,6 +93,7 @@ pub fn list_all_devices() -> Result<Vec<DeviceDto>, String> {
         .map(|d| DeviceDto {
             id: d.id.to_string(),
             name: d.name,
+            endpoint_id: d.endpoint_id,
             kind: format!("{:?}", d.kind),
             sample_rate: d.sample_rate,
             channels: d.channels,
@@ -96,6 +112,7 @@ pub fn list_all_devices() -> Result<Vec<DeviceDto>, String> {
         result.push(DeviceDto {
             id: d.id.to_string(),
             name: d.name,
+            endpoint_id: d.endpoint_id,
             kind: format!("{:?}", d.kind),
             sample_rate: d.sample_rate,
             channels: d.channels,
@@ -107,8 +124,11 @@ pub fn list_all_devices() -> Result<Vec<DeviceDto>, String> {
 }
 
 #[tauri::command]
-pub fn start_engine(state: State<'_, AppState>) -> Result<(), String> {
-    state.engine.start().map_err(|e| e.to_string())
+pub fn start_engine(state: State<'_, AppState>) -> CmdResult<()> {
+    state
+        .engine
+        .start()
+        .map_err(|e| CommandError::from_engine_string(e.to_string()))
 }
 
 #[tauri::command]
@@ -121,60 +141,98 @@ pub fn engine_status(state: State<'_, AppState>) -> EngineStatus {
     EngineStatus {
         running: state.engine.is_running(),
         loopback_source: state.engine.loopback_source(),
+        alive: state.engine.health().is_alive(),
     }
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EngineStatus {
     pub running: bool,
     pub loopback_source: Option<String>,
+    /// `false`, если audio-thread поймал panic и больше не работает.
+    /// UI показывает баннер и предлагает перезапустить приложение.
+    pub alive: bool,
+}
+
+/// Эвенты от audio-thread (watchdog disconnect, panic, default-device
+/// change). UI забирает batched через `engine_events` poll каждые ~200 мс.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum EngineEventDto {
+    OutputDisconnected { id: String, reason: String },
+    EnginePanicked { message: String },
+    DefaultDeviceChanged { new_endpoint_id: Option<String> },
 }
 
 #[tauri::command]
-pub fn add_output(state: State<'_, AppState>, device_name: String) -> Result<String, String> {
+pub fn engine_events(state: State<'_, AppState>) -> Vec<EngineEventDto> {
     state
         .engine
-        .add_output(&device_name)
-        .map(|id| id.to_string())
-        .map_err(|e| e.to_string())
+        .take_events()
+        .into_iter()
+        .map(|ev| match ev {
+            zound_output::engine::EngineEvent::OutputDisconnected { id, reason } => {
+                EngineEventDto::OutputDisconnected {
+                    id: id.to_string(),
+                    reason,
+                }
+            }
+            zound_output::engine::EngineEvent::EnginePanicked { message } => {
+                EngineEventDto::EnginePanicked { message }
+            }
+            zound_output::engine::EngineEvent::DefaultDeviceChanged { new_endpoint_id } => {
+                EngineEventDto::DefaultDeviceChanged { new_endpoint_id }
+            }
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddOutputResultDto {
+    pub id: String,
+    pub endpoint_id: Option<String>,
 }
 
 #[tauri::command]
-pub fn remove_output(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub fn add_output(
+    state: State<'_, AppState>,
+    device_name: String,
+    endpoint_id: Option<String>,
+) -> CmdResult<AddOutputResultDto> {
+    let spec = EndpointSpec {
+        name: device_name,
+        endpoint_id,
+    };
+    state
+        .engine
+        .add_output_with_endpoint(spec)
+        .map(|(id, eid)| AddOutputResultDto {
+            id: id.to_string(),
+            endpoint_id: eid,
+        })
+        .map_err(|e| CommandError::from_engine_string(e.to_string()))
+}
+
+#[tauri::command]
+pub fn remove_output(state: State<'_, AppState>, id: String) {
     state.engine.remove_output(&DeviceId::from(id));
-    Ok(())
 }
 
 #[tauri::command]
-pub fn set_output_volume(
-    state: State<'_, AppState>,
-    id: String,
-    volume: f32,
-) -> Result<(), String> {
-    state
-        .engine
-        .set_volume(&DeviceId::from(id), volume)
-        .map_err(|e| e.to_string())
+pub fn set_output_volume(state: State<'_, AppState>, id: String, volume: f32) {
+    state.engine.set_volume(&DeviceId::from(id), volume);
 }
 
 #[tauri::command]
-pub fn set_output_muted(state: State<'_, AppState>, id: String, muted: bool) -> Result<(), String> {
-    state
-        .engine
-        .set_muted(&DeviceId::from(id), muted)
-        .map_err(|e| e.to_string())
+pub fn set_output_muted(state: State<'_, AppState>, id: String, muted: bool) {
+    state.engine.set_muted(&DeviceId::from(id), muted);
 }
 
 #[tauri::command]
-pub fn set_output_balance(
-    state: State<'_, AppState>,
-    id: String,
-    balance: f32,
-) -> Result<(), String> {
-    state
-        .engine
-        .set_balance(&DeviceId::from(id), balance)
-        .map_err(|e| e.to_string())
+pub fn set_output_balance(state: State<'_, AppState>, id: String, balance: f32) {
+    state.engine.set_balance(&DeviceId::from(id), balance);
 }
 
 #[tauri::command]
@@ -184,11 +242,10 @@ pub fn set_output_eq(
     low_db: f32,
     mid_db: f32,
     high_db: f32,
-) -> Result<(), String> {
+) {
     state
         .engine
-        .set_eq(&DeviceId::from(id), low_db, mid_db, high_db)
-        .map_err(|e| e.to_string())
+        .set_eq(&DeviceId::from(id), low_db, mid_db, high_db);
 }
 
 #[tauri::command]
@@ -197,19 +254,23 @@ pub fn play_test_signal(
     device_name: String,
     kind: String,
     bpm: Option<u16>,
-) -> Result<(), String> {
+) -> CmdResult<()> {
     let kind = match kind.as_str() {
         "click" => TestKind::Click,
         "sine" => TestKind::Sine1kHz,
         "metronome" => TestKind::Metronome {
             bpm: bpm.unwrap_or(120).clamp(40, 240),
         },
-        other => return Err(format!("unknown test kind: {other}")),
+        other => {
+            return Err(CommandError::bad_request(format!(
+                "unknown test kind: {other}"
+            )))
+        }
     };
     state
         .engine
         .play_test_signal(&device_name, kind)
-        .map_err(|e| e.to_string())
+        .map_err(|e| CommandError::from_engine_string(e.to_string()))
 }
 
 #[tauri::command]
@@ -218,6 +279,7 @@ pub fn stop_test_signal(state: State<'_, AppState>, device_name: String) {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncStatusDto {
     pub in_sync: bool,
     pub drift_ms: u32,
@@ -239,11 +301,11 @@ pub fn set_output_latency(
     state: State<'_, AppState>,
     id: String,
     latency_ms: u64,
-) -> Result<(), String> {
+) -> CmdResult<()> {
     state
         .sync
         .set_device_latency(&DeviceId::from(id), Duration::from_millis(latency_ms))
-        .map_err(|e| e.to_string())
+        .map_err(|e| CommandError::device_not_found(e.to_string()))
 }
 
 #[tauri::command]
@@ -264,6 +326,7 @@ pub fn set_all_latencies(state: State<'_, AppState>, latency_ms: u64) -> usize {
 // ---------- master controls ---------- //
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MasterStateDto {
     pub gain: f32,
     pub muted: bool,
@@ -290,6 +353,7 @@ pub fn set_master_muted(state: State<'_, AppState>, muted: bool) {
 // ---------- peak meters ---------- //
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PeakDto {
     pub id: String,
     pub peak: f32,
@@ -309,48 +373,16 @@ pub fn peaks(state: State<'_, AppState>) -> Vec<PeakDto> {
 }
 
 // ---------- session profile ---------- //
-
-#[derive(Serialize, Deserialize)]
-pub struct ProfileDeviceDto {
-    pub name: String,
-    pub volume: f32,
-    pub muted: bool,
-    pub balance: f32,
-    pub latency_ms: u64,
-}
-
-#[derive(Serialize)]
-pub struct SessionProfileDto {
-    pub devices: Vec<ProfileDeviceDto>,
-    pub master_gain: f32,
-    pub master_muted: bool,
-}
-
-impl From<SessionProfile> for SessionProfileDto {
-    fn from(p: SessionProfile) -> Self {
-        Self {
-            devices: p
-                .devices
-                .into_iter()
-                .map(|d| ProfileDeviceDto {
-                    name: d.name,
-                    volume: d.volume,
-                    muted: d.muted,
-                    balance: d.balance,
-                    latency_ms: d.latency_ms,
-                })
-                .collect(),
-            master_gain: p.master_gain,
-            master_muted: p.master_muted,
-        }
-    }
-}
+//
+// `DevicePreset` и `SessionProfile` ходят и в ↔ frontend, и в ↔ session.json.
+// Один общий тип (`#[serde(rename_all = "camelCase")]` в `zound-output`)
+// убирает дублирование DTO, которое было раньше.
 
 #[tauri::command]
-pub fn load_session_profile(state: State<'_, AppState>) -> Option<SessionProfileDto> {
+pub fn load_session_profile(state: State<'_, AppState>) -> Option<SessionProfile> {
     let path = state.session_path.read().clone()?;
     match SessionProfile::load_from(&path) {
-        Ok(Some(p)) => Some(p.into()),
+        Ok(Some(p)) => Some(p),
         Ok(None) => None,
         Err(e) => {
             tracing::warn!(?e, "session profile load failed");
@@ -362,30 +394,22 @@ pub fn load_session_profile(state: State<'_, AppState>) -> Option<SessionProfile
 #[tauri::command]
 pub fn save_session_profile(
     state: State<'_, AppState>,
-    devices: Vec<ProfileDeviceDto>,
+    devices: Vec<DevicePreset>,
     master_gain: f32,
     master_muted: bool,
-) -> Result<(), String> {
-    let path = match state.session_path.read().clone() {
-        Some(p) => p,
-        None => return Err("session path not initialized".into()),
-    };
+) -> CmdResult<()> {
+    let path = state
+        .session_path
+        .read()
+        .clone()
+        .ok_or_else(|| CommandError::backend("session path not initialized"))?;
     let profile = SessionProfile {
         version: zound_output::profile::PROFILE_VERSION,
-        devices: devices
-            .into_iter()
-            .map(|d| DevicePreset {
-                name: d.name,
-                volume: d.volume,
-                muted: d.muted,
-                balance: d.balance,
-                latency_ms: d.latency_ms,
-            })
-            .collect(),
+        devices,
         master_gain,
         master_muted,
     };
-    profile.save_to(&path)
+    profile.save_to(&path).map_err(CommandError::backend)
 }
 
 // ---------- latency calibration (заготовка) ---------- //

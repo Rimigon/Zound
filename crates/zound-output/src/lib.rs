@@ -8,8 +8,8 @@ pub mod engine;
 pub mod guard;
 pub mod profile;
 
-pub use engine::AudioEngine;
-pub use guard::{is_capture_source, ERR_FEEDBACK_LOOP};
+pub use engine::{AudioEngine, EngineHealth};
+pub use guard::{is_capture_source, CommandError, ERR_FEEDBACK_LOOP};
 pub use profile::{DevicePreset, SessionProfile};
 
 use std::collections::HashMap;

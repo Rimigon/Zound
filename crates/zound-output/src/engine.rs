@@ -25,7 +25,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -35,7 +35,7 @@ use parking_lot::{Mutex, RwLock};
 use ringbuf::traits::{Consumer, Observer, Producer};
 use rubato::{FastFixedIn, PolynomialDegree, Resampler};
 use zound_core::{DeviceId, Error, Result, ThreeBandEq};
-use zound_platform::{Capture, CaptureOpts, OutputOpts, OutputSink, TestStream};
+use zound_platform::{Capture, CaptureOpts, EndpointSpec, OutputOpts, OutputSink, TestStream};
 use zound_sync::{DriftCorrector, SyncEngine};
 
 use crate::guard::{is_capture_source, ERR_FEEDBACK_LOOP};
@@ -55,47 +55,92 @@ const DRIFT_TICK: Duration = Duration::from_millis(100);
 /// VU-метров.
 const PEAK_DECAY_PER_TICK: f32 = 0.92;
 
+/// Watchdog-окно: если за `WATCHDOG_TICKS_THRESHOLD` подряд push-ей в
+/// ringbuf устройство получало < 50 % от запрошенного объёма — считаем
+/// его отключённым (BT-наушники ушли, USB-сэб переподключили). Engine
+/// снимает output и шлёт уведомление через [`AudioEngine::take_events`].
+///
+/// 200 тиков ≈ 2 секунды (sleep между тиками 2 мс + 480 frames). Меньше
+/// — ложные срабатывания на jitter; больше — пользователь успевает
+/// заметить «звук пропал», прежде чем UI отреагирует.
+const WATCHDOG_TICKS_THRESHOLD: u32 = 200;
+const WATCHDOG_LOSS_FRACTION: f32 = 0.5;
+
+/// Период отчёта rate-limited drop-warning. Накопленные dropped-семплы
+/// логируются раз в DROP_REPORT_PERIOD на одно устройство, а не на
+/// каждый tick.
+const DROP_REPORT_PERIOD: Duration = Duration::from_secs(1);
+
+/// События, которые audio-thread эмитит наружу (UI читает через
+/// [`AudioEngine::take_events`]).
+#[derive(Debug, Clone)]
+pub enum EngineEvent {
+    /// Watchdog снял output: устройство считается отключённым (>50 %
+    /// потерь push в ringbuf на протяжении WATCHDOG_TICKS_THRESHOLD
+    /// тиков подряд).
+    OutputDisconnected { id: DeviceId, reason: String },
+    /// Audio-thread поймал panic. После этого engine считается мёртвым,
+    /// `EngineHealth::is_alive` = false, нужен soft-restart процесса.
+    EnginePanicked { message: String },
+    /// Системный default render endpoint поменялся (Windows). Capture
+    /// остался на старом → нужен restart, чтобы переключиться. UI
+    /// показывает баннер; сам restart инициирует фронт через
+    /// `stop_engine` + `start_engine`.
+    DefaultDeviceChanged { new_endpoint_id: Option<String> },
+}
+
+/// Состояние audio-thread: жив или умер. Хранится atomically, читать
+/// можно из любого потока без локов.
+#[derive(Debug, Clone)]
+pub struct EngineHealth {
+    alive: Arc<AtomicBool>,
+}
+
+impl EngineHealth {
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
+}
+
 /// Команды, которые внешний API шлёт audio-thread-у.
 enum EngineCmd {
     Start(SyncSender<Result<(), String>>),
     StopCapture(SyncSender<()>),
     AddOutput {
-        device_name: String,
-        reply: SyncSender<Result<DeviceId, String>>,
+        spec: EndpointSpec,
+        reply: SyncSender<Result<(DeviceId, Option<String>), String>>,
     },
     RemoveOutput {
         id: DeviceId,
         reply: SyncSender<()>,
     },
+    /// Fire-and-forget: command-side error (device gone) ловится только
+    /// в логах. Это P1.6 — UI больше не блокируется на каждый щелчок
+    /// слайдера громкости. Применимо для всех «mixer»-команд: volume,
+    /// mute, balance, EQ, master.
     SetVolume {
         id: DeviceId,
         volume: f32,
-        reply: SyncSender<Result<(), String>>,
     },
     SetMuted {
         id: DeviceId,
         muted: bool,
-        reply: SyncSender<Result<(), String>>,
     },
     SetBalance {
         id: DeviceId,
         balance: f32,
-        reply: SyncSender<Result<(), String>>,
     },
     SetEq {
         id: DeviceId,
         low_db: f32,
         mid_db: f32,
         high_db: f32,
-        reply: SyncSender<Result<(), String>>,
     },
     SetMasterGain {
         gain: f32,
-        reply: SyncSender<()>,
     },
     SetMasterMuted {
         muted: bool,
-        reply: SyncSender<()>,
     },
     PlayTestSignal {
         device_name: String,
@@ -104,8 +149,12 @@ enum EngineCmd {
     },
     StopTestSignal {
         device_name: String,
-        reply: SyncSender<()>,
     },
+    /// Soft-restart capture: при смене default-устройства watcher шлёт
+    /// эту команду; engine закрывает текущий capture и пытается открыть
+    /// новый default. Не путать с `StopCapture` + `Start` — здесь все
+    /// уже добавленные outputs остаются на месте.
+    RestartCapture,
     Shutdown,
 }
 
@@ -121,9 +170,20 @@ pub struct AudioEngine {
     /// volume / mute / balance / master). Шарится с UI без локов.
     /// Значения f32 ∈ [0; ~2.0] закодированы через `to_bits` в u32 atomic.
     peak_meters: Arc<RwLock<HashMap<DeviceId, Arc<AtomicU32>>>>,
+    /// Очередь событий, эмитированных audio-thread'ом (watchdog disconnect,
+    /// panic, default-device change). UI забирает batched через
+    /// [`take_events`](Self::take_events) на регулярном пуле.
+    events: Arc<Mutex<Vec<EngineEvent>>>,
+    /// Состояние audio-thread: alive / dead. Atomic для безлокового
+    /// чтения из UI-thread.
+    health: EngineHealth,
     _sync: Arc<SyncEngine>,
     outputs: Arc<OutputManager>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// Watcher на смену default-устройства (Windows). Drop отстановит
+    /// фоновой поток. На других ОС — `None`.
+    #[cfg(target_os = "windows")]
+    _default_watcher: Option<zound_platform::DefaultDeviceWatcher>,
 }
 
 impl AudioEngine {
@@ -134,6 +194,11 @@ impl AudioEngine {
         let running = Arc::new(RwLock::new(false));
         let peak_meters: Arc<RwLock<HashMap<DeviceId, Arc<AtomicU32>>>> =
             Arc::new(RwLock::new(HashMap::new()));
+        let events = Arc::new(Mutex::new(Vec::<EngineEvent>::new()));
+        let alive = Arc::new(AtomicBool::new(true));
+        let health = EngineHealth {
+            alive: alive.clone(),
+        };
 
         let t_sync = sync.clone();
         let t_outputs = outputs.clone();
@@ -141,14 +206,56 @@ impl AudioEngine {
         let t_loop = loopback_source.clone();
         let t_running = running.clone();
         let t_peaks = peak_meters.clone();
+        let t_events = events.clone();
+        let t_alive = alive.clone();
         let handle = thread::Builder::new()
             .name("zound-audio".into())
             .spawn(move || {
-                audio_thread(
-                    cmd_rx, t_sync, t_outputs, t_active, t_loop, t_running, t_peaks,
-                )
+                // Изолируем panic, чтобы audio-thread не убивал процесс
+                // и `Drop::join` не висел. При panic-е — лог + флаг
+                // `alive=false`, UI узнаёт через engine_status.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    audio_thread(
+                        cmd_rx,
+                        t_sync,
+                        t_outputs,
+                        t_active,
+                        t_loop,
+                        t_running,
+                        t_peaks,
+                        t_events.clone(),
+                    );
+                }));
+                if let Err(payload) = result {
+                    let msg = panic_payload_to_string(&payload);
+                    tracing::error!(panic = %msg, "audio-thread panicked");
+                    t_events
+                        .lock()
+                        .push(EngineEvent::EnginePanicked { message: msg });
+                }
+                t_alive.store(false, Ordering::Relaxed);
             })
             .expect("spawn audio thread");
+
+        // Watcher на смену default render endpoint (Windows). Сообщает в
+        // engine событие + шлёт RestartCapture, чтобы переключить
+        // loopback на новый default без перезапуска приложения.
+        #[cfg(target_os = "windows")]
+        let _default_watcher = {
+            let cmd_for_watcher = cmd_tx.clone();
+            let events_for_watcher = events.clone();
+            Some(zound_platform::DefaultDeviceWatcher::spawn(
+                Duration::from_millis(500),
+                move |new_id| {
+                    events_for_watcher
+                        .lock()
+                        .push(EngineEvent::DefaultDeviceChanged {
+                            new_endpoint_id: new_id,
+                        });
+                    let _ = cmd_for_watcher.send(EngineCmd::RestartCapture);
+                },
+            ))
+        };
 
         Self {
             cmd_tx,
@@ -156,10 +263,31 @@ impl AudioEngine {
             loopback_source,
             running,
             peak_meters,
+            events,
+            health,
             _sync: sync,
             outputs,
             thread: Mutex::new(Some(handle)),
+            #[cfg(target_os = "windows")]
+            _default_watcher,
         }
+    }
+
+    /// Текущее состояние audio-thread. UI должен опрашивать на старте +
+    /// после крупных операций — если `is_alive == false`, нужен
+    /// рестарт процесса (мы не пытаемся пересоздавать audio-thread в
+    /// рантайме: это сложнее, чем кажется, легче честно показать
+    /// «engine died, please restart»).
+    pub fn health(&self) -> EngineHealth {
+        self.health.clone()
+    }
+
+    /// Слить накопленные события из engine. UI вызывает на регулярном
+    /// poll — типично 200 мс. Возвращает Vec, который дальше превращается
+    /// в Tauri events для фронта.
+    pub fn take_events(&self) -> Vec<EngineEvent> {
+        let mut guard = self.events.lock();
+        std::mem::take(&mut *guard)
     }
 
     /// Линейный peak (0..1+) для устройства за последний tick. None если
@@ -180,28 +308,13 @@ impl AudioEngine {
             .collect()
     }
 
-    /// Установить master gain ∈ [0; 1]. Применяется всем активным
-    /// устройствам на следующем чанке.
+    /// Установить master gain. Fire-and-forget — UI не блокируется.
     pub fn set_master_gain(&self, gain: f32) {
-        let (tx, rx) = mpsc::sync_channel(1);
-        if self
-            .cmd_tx
-            .send(EngineCmd::SetMasterGain { gain, reply: tx })
-            .is_ok()
-        {
-            let _ = rx.recv();
-        }
+        let _ = self.cmd_tx.send(EngineCmd::SetMasterGain { gain });
     }
 
     pub fn set_master_muted(&self, muted: bool) {
-        let (tx, rx) = mpsc::sync_channel(1);
-        if self
-            .cmd_tx
-            .send(EngineCmd::SetMasterMuted { muted, reply: tx })
-            .is_ok()
-        {
-            let _ = rx.recv();
-        }
+        let _ = self.cmd_tx.send(EngineCmd::SetMasterMuted { muted });
     }
 
     /// Чтение master-gain прямо из `OutputManager` (минуя audio-thread).
@@ -243,14 +356,23 @@ impl AudioEngine {
         *self.running.read()
     }
 
-    /// Добавить output по имени устройства.
+    /// Добавить output по имени устройства (без stable id).
     pub fn add_output(&self, device_name: &str) -> Result<DeviceId> {
+        self.add_output_with_endpoint(EndpointSpec::by_name(device_name))
+            .map(|(id, _)| id)
+    }
+
+    /// Добавить output по [`EndpointSpec`] (имя + опциональный stable
+    /// endpoint id). Возвращает резолвнутый `DeviceId` (= имя cpal-
+    /// устройства, как и было) и текущий endpoint_id, если backend
+    /// смог его получить — UI кладёт это в session profile.
+    pub fn add_output_with_endpoint(
+        &self,
+        spec: EndpointSpec,
+    ) -> Result<(DeviceId, Option<String>)> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.cmd_tx
-            .send(EngineCmd::AddOutput {
-                device_name: device_name.to_string(),
-                reply: tx,
-            })
+            .send(EngineCmd::AddOutput { spec, reply: tx })
             .map_err(|_| Error::Other("engine thread gone".into()))?;
         rx.recv()
             .map_err(|_| Error::Other("engine thread dropped reply".into()))?
@@ -266,66 +388,41 @@ impl AudioEngine {
         let _ = rx.recv();
     }
 
-    pub fn set_volume(&self, id: &DeviceId, volume: f32) -> Result<()> {
-        let (tx, rx) = mpsc::sync_channel(1);
-        self.cmd_tx
-            .send(EngineCmd::SetVolume {
-                id: id.clone(),
-                volume,
-                reply: tx,
-            })
-            .map_err(|_| Error::Other("engine thread gone".into()))?;
-        rx.recv()
-            .map_err(|_| Error::Other("engine thread dropped reply".into()))?
-            .map_err(Error::Other)
+    /// Громкость устройства. Fire-and-forget: ошибки (device gone)
+    /// логируются в audio-thread, не возвращаются — UI остаётся
+    /// отзывчивым на каждое движение слайдера.
+    pub fn set_volume(&self, id: &DeviceId, volume: f32) {
+        let _ = self.cmd_tx.send(EngineCmd::SetVolume {
+            id: id.clone(),
+            volume,
+        });
     }
 
-    pub fn set_muted(&self, id: &DeviceId, muted: bool) -> Result<()> {
-        let (tx, rx) = mpsc::sync_channel(1);
-        self.cmd_tx
-            .send(EngineCmd::SetMuted {
-                id: id.clone(),
-                muted,
-                reply: tx,
-            })
-            .map_err(|_| Error::Other("engine thread gone".into()))?;
-        rx.recv()
-            .map_err(|_| Error::Other("engine thread dropped reply".into()))?
-            .map_err(Error::Other)
+    pub fn set_muted(&self, id: &DeviceId, muted: bool) {
+        let _ = self.cmd_tx.send(EngineCmd::SetMuted {
+            id: id.clone(),
+            muted,
+        });
     }
 
     /// 3-полосный EQ: low / mid / high gain в dB. ±12 dB clamp в worker.
     /// Все три = 0 → EQ переходит в bypass.
-    pub fn set_eq(&self, id: &DeviceId, low_db: f32, mid_db: f32, high_db: f32) -> Result<()> {
-        let (tx, rx) = mpsc::sync_channel(1);
-        self.cmd_tx
-            .send(EngineCmd::SetEq {
-                id: id.clone(),
-                low_db,
-                mid_db,
-                high_db,
-                reply: tx,
-            })
-            .map_err(|_| Error::Other("engine thread gone".into()))?;
-        rx.recv()
-            .map_err(|_| Error::Other("engine thread dropped reply".into()))?
-            .map_err(Error::Other)
+    pub fn set_eq(&self, id: &DeviceId, low_db: f32, mid_db: f32, high_db: f32) {
+        let _ = self.cmd_tx.send(EngineCmd::SetEq {
+            id: id.clone(),
+            low_db,
+            mid_db,
+            high_db,
+        });
     }
 
     /// Balance L/R, диапазон [-1.0; +1.0]. Применяется только для stereo-
-    /// устройств; для mono/4ch+ просто игнорируется (apply skip).
-    pub fn set_balance(&self, id: &DeviceId, balance: f32) -> Result<()> {
-        let (tx, rx) = mpsc::sync_channel(1);
-        self.cmd_tx
-            .send(EngineCmd::SetBalance {
-                id: id.clone(),
-                balance: balance.clamp(-1.0, 1.0),
-                reply: tx,
-            })
-            .map_err(|_| Error::Other("engine thread gone".into()))?;
-        rx.recv()
-            .map_err(|_| Error::Other("engine thread dropped reply".into()))?
-            .map_err(Error::Other)
+    /// устройств; для mono/4ch+ просто игнорируется.
+    pub fn set_balance(&self, id: &DeviceId, balance: f32) {
+        let _ = self.cmd_tx.send(EngineCmd::SetBalance {
+            id: id.clone(),
+            balance: balance.clamp(-1.0, 1.0),
+        });
     }
 
     pub fn play_test_signal(
@@ -347,12 +444,9 @@ impl AudioEngine {
     }
 
     pub fn stop_test_signal(&self, device_name: &str) {
-        let (tx, rx) = mpsc::sync_channel(1);
         let _ = self.cmd_tx.send(EngineCmd::StopTestSignal {
             device_name: device_name.to_string(),
-            reply: tx,
         });
-        let _ = rx.recv();
     }
 
     pub fn active_outputs(&self) -> Vec<DeviceId> {
@@ -392,10 +486,12 @@ struct WorkerOutput {
     last_push_micros: Arc<AtomicU64>,
     /// Peak-метр (атомарно шарится с UI). f32 bits в u32.
     peak_bits: Arc<AtomicU32>,
-    /// PI-контроллер дрейфа. Хранит интегральную часть и последнюю
-    /// корректировку. Применяется в `push_to_output` к выходному
-    /// буферу через линейный stretch (не через rubato — rubato
-    /// `FastFixedIn` не умеет менять ratio в рантайме без re-init).
+    /// PI-контроллер дрейфа. На каждый drift-tick (DRIFT_TICK) выдаёт
+    /// относительную корректировку ratio в [-MAX_CORRECTION;
+    /// +MAX_CORRECTION], которую worker применяет через
+    /// [`Resampler::set_resample_ratio_relative`] (см. P1.5). Если
+    /// resampler отсутствует (in_sr == out_sr) — fallback на линейный
+    /// stretch буфера.
     drift: DriftCorrector,
     /// Сколько interleaved-семплов компенсации мы УЖЕ применили к этому
     /// устройству (положительные = добавили тишины, отрицательные =
@@ -410,6 +506,16 @@ struct WorkerOutput {
     out_channels: u16,
     /// 3-полосный EQ. В bypass ничего не делает (один if на чанк).
     eq: ThreeBandEq,
+    /// Watchdog счётчик: сколько ПОДРЯД worker-tick'ов устройство теряло
+    /// больше 50 % push'а в ringbuf. При достижении
+    /// `WATCHDOG_TICKS_THRESHOLD` устройство считается отключённым; engine
+    /// эмитит `OutputDisconnected`. Сброс на 0 после успешного push.
+    consecutive_loss_ticks: u32,
+    /// Накопленный счётчик потерянных семплов с момента последнего
+    /// rate-limited лога. Сбрасывается раз в DROP_REPORT_PERIOD.
+    dropped_samples_window: u64,
+    /// Когда последний раз сообщили об overflow для этого устройства.
+    last_drop_report: Instant,
 }
 
 struct ResampleCtx {
@@ -429,6 +535,7 @@ fn audio_thread(
     loopback_source: Arc<RwLock<Option<String>>>,
     running: Arc<RwLock<bool>>,
     peak_meters: Arc<RwLock<HashMap<DeviceId, Arc<AtomicU32>>>>,
+    events: Arc<Mutex<Vec<EngineEvent>>>,
 ) {
     let mut capture: Option<Capture> = None;
     let mut workers: Vec<WorkerOutput> = Vec::new();
@@ -469,9 +576,21 @@ fn audio_thread(
                     tracing::info!("capture stopped");
                     let _ = reply.send(());
                 }
-                Ok(EngineCmd::AddOutput { device_name, reply }) => {
+                Ok(EngineCmd::RestartCapture) => {
+                    // Soft-restart: закрываем capture (audio-thread жив,
+                    // workers остаются). При следующем `Start` открывается
+                    // новый default. UI показывает баннер «default
+                    // changed, restart capture».
+                    if capture.is_some() {
+                        tracing::info!("soft-restart capture (default device changed)");
+                        capture = None;
+                        *loopback_source.write() = None;
+                        *running.write() = false;
+                    }
+                }
+                Ok(EngineCmd::AddOutput { spec, reply }) => {
                     let src = capture.as_ref().map(|c| c.session.source_name.as_str());
-                    let res = if is_capture_source(src, &device_name) {
+                    let res = if is_capture_source(src, &spec.name) {
                         Err(ERR_FEEDBACK_LOOP.to_string())
                     } else {
                         handle_add_output(
@@ -481,7 +600,7 @@ fn audio_thread(
                             &outputs,
                             &active_ids,
                             &peak_meters,
-                            &device_name,
+                            &spec,
                         )
                     };
                     let _ = reply.send(res);
@@ -494,70 +613,51 @@ fn audio_thread(
                     active_ids.write().retain(|x| x != &id);
                     let _ = reply.send(());
                 }
-                Ok(EngineCmd::SetVolume { id, volume, reply }) => {
-                    let res = match workers.iter().find(|w| w.sink.device_id == id) {
-                        Some(w) => {
-                            w.sink.volume.set(volume);
-                            Ok(())
-                        }
-                        None => Err(format!("device not found: {id}")),
-                    };
-                    let _ = reply.send(res);
+                Ok(EngineCmd::SetVolume { id, volume }) => {
+                    match workers.iter().find(|w| w.sink.device_id == id) {
+                        Some(w) => w.sink.volume.set(volume),
+                        None => tracing::warn!(%id, "set_volume: device not found"),
+                    }
                 }
-                Ok(EngineCmd::SetMuted { id, muted, reply }) => {
-                    let res = match workers.iter().find(|w| w.sink.device_id == id) {
+                Ok(EngineCmd::SetMuted { id, muted }) => {
+                    match workers.iter().find(|w| w.sink.device_id == id) {
                         Some(w) => {
                             w.sink.muted.store(muted, Ordering::Relaxed);
                             outputs.set_muted(&id, muted).ok();
-                            Ok(())
                         }
-                        None => Err(format!("device not found: {id}")),
-                    };
-                    let _ = reply.send(res);
+                        None => tracing::warn!(%id, "set_muted: device not found"),
+                    }
                 }
-                Ok(EngineCmd::SetBalance { id, balance, reply }) => {
-                    let res = match workers.iter().find(|w| w.sink.device_id == id) {
-                        Some(w) => {
-                            w.balance.store(balance.to_bits(), Ordering::Relaxed);
-                            Ok(())
-                        }
-                        None => Err(format!("device not found: {id}")),
-                    };
-                    let _ = reply.send(res);
+                Ok(EngineCmd::SetBalance { id, balance }) => {
+                    match workers.iter().find(|w| w.sink.device_id == id) {
+                        Some(w) => w.balance.store(balance.to_bits(), Ordering::Relaxed),
+                        None => tracing::warn!(%id, "set_balance: device not found"),
+                    }
                 }
                 Ok(EngineCmd::SetEq {
                     id,
                     low_db,
                     mid_db,
                     high_db,
-                    reply,
-                }) => {
-                    let res = match workers.iter_mut().find(|w| w.sink.device_id == id) {
-                        Some(w) => {
-                            w.eq.set_low_gain(low_db);
-                            w.eq.set_mid_gain(mid_db);
-                            w.eq.set_high_gain(high_db);
-                            Ok(())
-                        }
-                        None => Err(format!("device not found: {id}")),
-                    };
-                    let _ = reply.send(res);
-                }
-                Ok(EngineCmd::SetMasterGain { gain, reply }) => {
+                }) => match workers.iter_mut().find(|w| w.sink.device_id == id) {
+                    Some(w) => {
+                        w.eq.set_low_gain(low_db);
+                        w.eq.set_mid_gain(mid_db);
+                        w.eq.set_high_gain(high_db);
+                    }
+                    None => tracing::warn!(%id, "set_eq: device not found"),
+                },
+                Ok(EngineCmd::SetMasterGain { gain }) => {
                     outputs.master().set_gain(gain);
-                    let _ = reply.send(());
                 }
-                Ok(EngineCmd::SetMasterMuted { muted, reply }) => {
+                Ok(EngineCmd::SetMasterMuted { muted }) => {
                     outputs.master().set_muted(muted);
-                    let _ = reply.send(());
                 }
                 Ok(EngineCmd::PlayTestSignal {
                     device_name,
                     kind,
                     reply,
                 }) => {
-                    // Защита от feedback: тест на source = loopback вернётся
-                    // в наш capture и зациклится.
                     let src = capture.as_ref().map(|c| c.session.source_name.as_str());
                     let res = if is_capture_source(src, &device_name) {
                         Err(ERR_FEEDBACK_LOOP.to_string())
@@ -574,9 +674,8 @@ fn audio_thread(
                     };
                     let _ = reply.send(res);
                 }
-                Ok(EngineCmd::StopTestSignal { device_name, reply }) => {
+                Ok(EngineCmd::StopTestSignal { device_name }) => {
                     test_streams.retain(|t| t.device_name != device_name);
-                    let _ = reply.send(());
                 }
                 Ok(EngineCmd::Shutdown) => {
                     tracing::info!("audio-thread shutdown");
@@ -615,7 +714,11 @@ fn audio_thread(
             thread::sleep(tick_sleep);
         }
 
-        // 3. Drift-tick (раз в DRIFT_TICK).
+        // 3. Drift-tick (раз в DRIFT_TICK). Применяем коррекцию через
+        // rubato::set_resample_ratio_relative — без drop/dup кадров,
+        // pitch-плывения нет даже на тон-сигналах. Если у устройства
+        // нет ресемплера (in_sr == out_sr) — фоллбэк в push_to_output
+        // через линейный stretch.
         if last_drift_tick.elapsed() >= DRIFT_TICK {
             let dt = last_drift_tick.elapsed();
             last_drift_tick = Instant::now();
@@ -623,13 +726,52 @@ fn audio_thread(
             if !errors.is_empty() {
                 for w in workers.iter_mut() {
                     if let Some((_, err)) = errors.iter().find(|(id, _)| id == &w.sink.device_id) {
-                        let _ = w.drift.update(*err, dt);
+                        let correction = w.drift.update(*err, dt);
+                        if let Some(ctx) = w.resampler.as_mut() {
+                            // rubato принимает relative ratio: 1.0 = базовая,
+                            // (1.0 + corr) сдвигает на ±0.1 % максимум.
+                            let _ = ctx.resampler.set_resample_ratio_relative(
+                                (1.0 + correction as f64).clamp(0.999, 1.001),
+                                false,
+                            );
+                        }
                     }
                 }
             }
         }
 
-        // 4. Сборка отыгравших test-streams (Click/Sine self-terminate
+        // 4. Watchdog: устройства, которые `WATCHDOG_TICKS_THRESHOLD`
+        // подряд теряют >50 % push'а в ringbuf, помечаем как
+        // отключённые. Engine эмитит OutputDisconnected — UI уберёт их
+        // из активных и предложит переподключить.
+        let mut to_disconnect: Vec<(DeviceId, String)> = Vec::new();
+        for w in workers.iter() {
+            if w.consecutive_loss_ticks >= WATCHDOG_TICKS_THRESHOLD {
+                to_disconnect.push((
+                    w.sink.device_id.clone(),
+                    format!(
+                        "no progress for {} ticks (>{}% lost)",
+                        WATCHDOG_TICKS_THRESHOLD,
+                        (WATCHDOG_LOSS_FRACTION * 100.0) as u32
+                    ),
+                ));
+            }
+        }
+        if !to_disconnect.is_empty() {
+            for (id, reason) in to_disconnect {
+                tracing::warn!(%id, %reason, "watchdog: dropping output");
+                workers.retain(|w| w.sink.device_id != id);
+                sync.remove_device(&id);
+                outputs.remove(&id);
+                peak_meters.write().remove(&id);
+                active_ids.write().retain(|x| x != &id);
+                events
+                    .lock()
+                    .push(EngineEvent::OutputDisconnected { id, reason });
+            }
+        }
+
+        // 5. Сборка отыгравших test-streams (Click/Sine self-terminate
         // через stop_flag; Metronome — только по UI-команде Stop).
         test_streams.retain(|t| !t.is_done());
     }
@@ -665,8 +807,8 @@ fn handle_add_output(
     outputs: &Arc<OutputManager>,
     active_ids: &Arc<RwLock<Vec<DeviceId>>>,
     peak_meters: &Arc<RwLock<HashMap<DeviceId, Arc<AtomicU32>>>>,
-    device_name: &str,
-) -> Result<DeviceId, String> {
+    spec: &EndpointSpec,
+) -> Result<(DeviceId, Option<String>), String> {
     let cap = capture
         .as_ref()
         .ok_or_else(|| "engine not started".to_string())?;
@@ -675,8 +817,8 @@ fn handle_add_output(
     // Intrinsic latency — неизвестна, дефолт 20 мс (будет поправлено
     // пользователем через UI-слайдер).
     let intrinsic = Duration::from_millis(20);
-    let sink = zound_platform::open_output_by_name(
-        device_name,
+    let sink = zound_platform::open_output_by_endpoint(
+        spec,
         OutputOpts {
             buffer_samples: 96_000,
             // Компенсацию считаем после того, как узнаем реальный SR.
@@ -688,6 +830,7 @@ fn handle_add_output(
     let resampler = build_resampler_ctx(cap_rate, sink.sample_rate, sink.channels)
         .map_err(|e| e.to_string())?;
     let device_id = sink.device_id.clone();
+    let endpoint_id = sink.endpoint_id.clone();
 
     let last_push_micros = sync.add_device(device_id.clone(), intrinsic, sink.sample_rate);
     outputs.add(device_id.clone());
@@ -723,9 +866,12 @@ fn handle_add_output(
         out_sr,
         out_channels,
         eq,
+        consecutive_loss_ticks: 0,
+        dropped_samples_window: 0,
+        last_drop_report: Instant::now(),
     });
-    tracing::info!(%device_id, "output added");
-    Ok(device_id)
+    tracing::info!(%device_id, ?endpoint_id, "output added");
+    Ok((device_id, endpoint_id))
 }
 
 fn build_resampler_ctx(in_sr: u32, out_sr: u32, channels: u16) -> Result<Option<ResampleCtx>> {
@@ -832,12 +978,15 @@ fn push_to_output(
         }
     }
 
-    // Drift-correction — линейный stretch буфера через простой decimate
-    // /дублирование. Реальная коррекция ±0.1% — не слышимая. Применяем
-    // только если correction != 0.
-    let correction = w.drift.last_correction();
-    if correction.abs() > f32::EPSILON {
-        apply_drift_stretch(&mut w.interleaved_out, out_channels, correction);
+    // Drift-correction. Если ресемплер есть — он уже отрегулировал
+    // ratio в drift-tick'е через `set_resample_ratio_relative` (см. P1.5).
+    // Иначе — fallback на линейный stretch буфера для устройств с
+    // in_sr == out_sr.
+    if w.resampler.is_none() {
+        let correction = w.drift.last_correction();
+        if correction.abs() > f32::EPSILON {
+            apply_drift_stretch(&mut w.interleaved_out, out_channels, correction);
+        }
     }
 
     // Compensation reconcile — выравнивание per-device latency к target
@@ -856,14 +1005,37 @@ fn push_to_output(
     // в синхроне с тем, что реально пошло на устройство.
     update_peak(&w.interleaved_out, &w.peak_bits);
 
+    let chunk_len = w.interleaved_out.len();
     let pushed = w.sink.producer.push_slice(&w.interleaved_out);
-    if pushed < w.interleaved_out.len() {
-        tracing::debug!(
-            dropped = w.interleaved_out.len() - pushed,
-            device = %w.sink.device_id,
-            "output ringbuf full"
-        );
+    let dropped = chunk_len.saturating_sub(pushed);
+
+    // Watchdog (P1.2): если потеряли >50 % — увеличиваем счётчик.
+    // Любой успешный chunk с <50 % потерь — сбрасываем. Так BT-
+    // наушники, которые ушли, накопят 200 ticks (~2 сек) и engine
+    // их снимет.
+    if chunk_len > 0 && (dropped as f32) > (chunk_len as f32) * WATCHDOG_LOSS_FRACTION {
+        w.consecutive_loss_ticks = w.consecutive_loss_ticks.saturating_add(1);
+    } else {
+        w.consecutive_loss_ticks = 0;
     }
+
+    // Rate-limited drop-warning (P2.15): копим dropped и логируем раз
+    // в DROP_REPORT_PERIOD на устройство. Без этого `tracing::debug` шёл
+    // на каждый tick при overflow и засорял логи.
+    if dropped > 0 {
+        w.dropped_samples_window = w.dropped_samples_window.saturating_add(dropped as u64);
+        if w.last_drop_report.elapsed() >= DROP_REPORT_PERIOD {
+            tracing::warn!(
+                dropped = w.dropped_samples_window,
+                device = %w.sink.device_id,
+                period_ms = DROP_REPORT_PERIOD.as_millis() as u64,
+                "output ringbuf full (rate-limited)"
+            );
+            w.dropped_samples_window = 0;
+            w.last_drop_report = Instant::now();
+        }
+    }
+
     if pushed > 0 {
         let now_micros = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1005,6 +1177,19 @@ fn update_peak(buf: &[f32], peak_bits: &AtomicU32) {
     let decayed = prev * PEAK_DECAY_PER_TICK;
     let next = if max > decayed { max } else { decayed };
     peak_bits.store(next.to_bits(), Ordering::Relaxed);
+}
+
+/// Превратить panic payload (`Box<dyn Any>`) в человекочитаемую строку.
+/// Тащим оба варианта — `&str` и `String` — потому что `panic!` отдаёт
+/// разные типы в зависимости от формы вызова.
+fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
 }
 
 /// Адаптирует каналы (mono↔stereo, downmix к меньшему N) и записывает

@@ -102,6 +102,7 @@ fn run_tauri() {
             commands::start_engine,
             commands::stop_engine,
             commands::engine_status,
+            commands::engine_events,
             commands::add_output,
             commands::remove_output,
             commands::set_output_volume,
@@ -240,10 +241,14 @@ fn run_self_test() -> Result<(), Box<dyn std::error::Error>> {
         master_muted: true,
         devices: vec![DevicePreset {
             name: "selftest-device".into(),
+            endpoint_id: Some("selftest:42".into()),
             volume: 0.33,
             muted: false,
             balance: -0.5,
             latency_ms: 77,
+            eq_low_db: 1.5,
+            eq_mid_db: -2.0,
+            eq_high_db: 0.0,
         }],
         ..SessionProfile::default()
     };

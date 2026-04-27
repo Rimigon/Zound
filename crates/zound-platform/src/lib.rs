@@ -15,8 +15,17 @@ pub mod test_signal;
 #[cfg(target_os = "macos")]
 mod macos_devices;
 
+#[cfg(target_os = "windows")]
+pub mod windows_endpoints;
+
 pub use backend::AudioBackend;
 pub use capture::{open_default_loopback, Capture, CaptureOpts, CaptureSession};
 pub use cpal_backend::CpalBackend;
-pub use output::{open_output_by_name, AtomicVolume, OutputOpts, OutputSink};
+pub use output::{
+    open_output_by_endpoint, open_output_by_name, AtomicVolume, EndpointSpec, OutputOpts,
+    OutputSink,
+};
 pub use test_signal::{start_test_stream, TestKind, TestStream};
+
+#[cfg(target_os = "windows")]
+pub use windows_endpoints::DefaultDeviceWatcher;

@@ -55,6 +55,12 @@ pub fn find_device_id_by_name(name: &str) -> Option<AudioObjectID> {
     None
 }
 
+/// Обратная сторона: имя устройства по его AudioObjectID. Используется
+/// для резолва endpoint_id из session profile.
+pub fn device_name_by_id(id: AudioObjectID) -> Option<String> {
+    device_name(id)
+}
+
 /// (sample_rate, channels) для output-стороны устройства. Возвращает
 /// None, если устройство не имеет output-каналов вовсе.
 pub fn output_format(device_id: AudioObjectID) -> Option<(u32, u16)> {
@@ -89,6 +95,10 @@ fn enumerate(is_output: bool) -> Result<Vec<DeviceInfo>> {
             continue;
         };
         let sample_rate = device_sample_rate(id).unwrap_or(DEFAULT_SAMPLE_RATE);
+        // CoreAudio AudioObjectID — стабильный 32-битный handle на устройство.
+        // Он переживает переименование и одинаково именованные устройства
+        // различает; формат строки — десятичное число для читаемости логов.
+        let endpoint_id = Some(format!("coreaudio:{id}"));
         out.push(DeviceInfo {
             id: DeviceId::from(name.clone()),
             name,
@@ -96,6 +106,7 @@ fn enumerate(is_output: bool) -> Result<Vec<DeviceInfo>> {
             sample_rate,
             channels,
             is_default: Some(id) == default_id,
+            endpoint_id,
         });
     }
     Ok(out)

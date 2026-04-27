@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use cpal::traits::{DeviceTrait, HostTrait};
 use zound_core::{DeviceId, DeviceInfo, DeviceKind, Error, Result};
 
@@ -21,7 +23,12 @@ impl CpalBackend {
         }
     }
 
-    fn describe(&self, device: &cpal::Device, is_default: bool) -> DeviceInfo {
+    fn describe(
+        &self,
+        device: &cpal::Device,
+        is_default: bool,
+        endpoint_lookup: Option<&HashMap<String, String>>,
+    ) -> DeviceInfo {
         let name = device.name().unwrap_or_else(|_| "unknown".to_string());
         // cpal не даёт точный тип транспорта; маркируем всё как Unknown,
         // backend-ы поверх нативных API смогут различать Wired / Bluetooth.
@@ -34,6 +41,8 @@ impl CpalBackend {
                 zound_core::DEFAULT_CHANNELS,
             ));
 
+        let endpoint_id = endpoint_lookup.and_then(|m| m.get(&name).cloned());
+
         DeviceInfo {
             id: DeviceId::from(name.clone()),
             name,
@@ -41,6 +50,7 @@ impl CpalBackend {
             sample_rate,
             channels,
             is_default,
+            endpoint_id,
         }
     }
 }
@@ -77,6 +87,11 @@ impl AudioBackend for CpalBackend {
                 .output_devices()
                 .map_err(|e| Error::Backend(e.to_string()))?;
 
+            #[cfg(target_os = "windows")]
+            let endpoint_lookup = Some(crate::windows_endpoints::endpoint_id_map());
+            #[cfg(not(target_os = "windows"))]
+            let endpoint_lookup: Option<HashMap<String, String>> = None;
+
             Ok(devices
                 // На Linux PipeWire/Pulse cpal иногда отдаёт monitor-source
                 // в `output_devices()`. Это виртуальный input от существующего
@@ -98,7 +113,7 @@ impl AudioBackend for CpalBackend {
                         .zip(d.name().ok().as_deref())
                         .map(|(a, b)| a == b)
                         .unwrap_or(false);
-                    self.describe(&d, is_default)
+                    self.describe(&d, is_default, endpoint_lookup.as_ref())
                 })
                 .collect())
         }
@@ -119,6 +134,12 @@ impl AudioBackend for CpalBackend {
                 .input_devices()
                 .map_err(|e| Error::Backend(e.to_string()))?;
 
+            // Endpoint id есть только у render-устройств — на Windows
+            // input — отдельный capture-flow в IMMDeviceEnumerator. Пока не
+            // используется в profile (мы храним только outputs), — поэтому
+            // оставляем None.
+            let endpoint_lookup: Option<HashMap<String, String>> = None;
+
             Ok(devices
                 .map(|d| {
                     let is_default = default_name
@@ -126,7 +147,7 @@ impl AudioBackend for CpalBackend {
                         .zip(d.name().ok().as_deref())
                         .map(|(a, b)| a == b)
                         .unwrap_or(false);
-                    self.describe(&d, is_default)
+                    self.describe(&d, is_default, endpoint_lookup.as_ref())
                 })
                 .collect())
         }
@@ -137,6 +158,10 @@ impl AudioBackend for CpalBackend {
             .host
             .default_output_device()
             .ok_or_else(|| Error::Backend("no default output device".into()))?;
-        Ok(self.describe(&device, true))
+        #[cfg(target_os = "windows")]
+        let endpoint_lookup = Some(crate::windows_endpoints::endpoint_id_map());
+        #[cfg(not(target_os = "windows"))]
+        let endpoint_lookup: Option<HashMap<String, String>> = None;
+        Ok(self.describe(&device, true, endpoint_lookup.as_ref()))
     }
 }

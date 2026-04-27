@@ -2,11 +2,14 @@
 //! пользователя между запусками.
 //!
 //! В файле хранится: список добавленных устройств, их per-device volume /
-//! mute / balance / latency, плюс master gain / mute. Identification идёт
-//! по имени устройства (см. ограничение в platform/output.rs).
+//! mute / balance / latency / EQ, плюс master gain / mute. Привязка к
+//! устройству идёт по `endpoint_id` (стабильный backend-id, переживающий
+//! переименование), с fallback на `name` — см. матчинг в
+//! `platform::open_output_by_endpoint`.
 //!
 //! Формат — JSON, читаемый. Поле `version` нужно для будущей миграции:
-//! пока всегда 1.
+//! пока всегда 1; новые поля добавляются с `#[serde(default)]`, поэтому
+//! старые профили читаются без миграции.
 
 use std::path::Path;
 
@@ -17,9 +20,21 @@ use serde::{Deserialize, Serialize};
 pub const PROFILE_VERSION: u32 = 1;
 
 /// Состояние одного output-устройства в профиле.
+///
+/// Используется и в Tauri-командах (для обмена с фронтом), и в
+/// сериализации session.json: одна структура с
+/// `serde(rename_all = "camelCase")` снимает дублирование, которое было
+/// в `app/src/commands.rs::ProfileDeviceDto`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct DevicePreset {
     pub name: String,
+    /// Стабильный backend-id (WASAPI endpoint, CoreAudio AudioObjectID,
+    /// и т.п.). При восстановлении профиля приоритетный матчинг идёт по
+    /// нему; если backend на текущей системе вернул другой id или вообще
+    /// не вернул — fallback на сравнение по `name`.
+    #[serde(default)]
+    pub endpoint_id: Option<String>,
     #[serde(default = "default_volume")]
     pub volume: f32,
     #[serde(default)]
@@ -28,6 +43,15 @@ pub struct DevicePreset {
     pub balance: f32,
     #[serde(default = "default_latency_ms")]
     pub latency_ms: u64,
+    /// Усиление НЧ-полосы (low-shelf 100 Hz) в dB, диапазон ±12.
+    #[serde(default)]
+    pub eq_low_db: f32,
+    /// Усиление СЧ (peak 1 kHz).
+    #[serde(default)]
+    pub eq_mid_db: f32,
+    /// Усиление ВЧ (high-shelf 8 kHz).
+    #[serde(default)]
+    pub eq_high_db: f32,
 }
 
 fn default_volume() -> f32 {
@@ -41,16 +65,21 @@ impl DevicePreset {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            endpoint_id: None,
             volume: default_volume(),
             muted: false,
             balance: 0.0,
             latency_ms: default_latency_ms(),
+            eq_low_db: 0.0,
+            eq_mid_db: 0.0,
+            eq_high_db: 0.0,
         }
     }
 }
 
 /// Полная сессия Zound. Сохраняется в `<app_data>/session.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionProfile {
     pub version: u32,
     #[serde(default)]
@@ -132,10 +161,14 @@ mod tests {
         let mut p = SessionProfile::default();
         p.devices.push(DevicePreset {
             name: "Speakers".into(),
+            endpoint_id: Some("wasapi:{0.0.0.00000000}.{abc}".into()),
             volume: 0.5,
             muted: true,
             balance: -0.25,
             latency_ms: 80,
+            eq_low_db: 3.0,
+            eq_mid_db: -2.0,
+            eq_high_db: 1.5,
         });
         p.master_gain = 0.7;
         p.master_muted = false;
@@ -147,12 +180,16 @@ mod tests {
 
     #[test]
     fn missing_fields_use_defaults() {
-        let s = r#"{"version":1,"devices":[{"name":"X"}]}"#;
+        // Старые v0.3.0 профили (snake_case, без endpoint_id и EQ) должны
+        // продолжать читаться: новые поля приходят со `default`.
+        let s = r#"{"version":1,"devices":[{"name":"X","latencyMs":20}]}"#;
         let p: SessionProfile = serde_json::from_str(s).unwrap();
         assert_eq!(p.devices.len(), 1);
         assert_eq!(p.devices[0].volume, 1.0);
         assert_eq!(p.devices[0].latency_ms, 20);
         assert!(!p.devices[0].muted);
+        assert_eq!(p.devices[0].eq_low_db, 0.0);
+        assert!(p.devices[0].endpoint_id.is_none());
         assert_eq!(p.master_gain, 1.0);
     }
 
