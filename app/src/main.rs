@@ -11,10 +11,13 @@
 )]
 
 use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use parking_lot::RwLock;
+use tauri::Manager;
 use tracing_subscriber::EnvFilter;
 
 use zound_output::{AudioEngine, OutputManager};
@@ -31,6 +34,14 @@ fn main() {
     init_logging();
 
     let args = parse_args(env::args().skip(1));
+
+    if args.self_test {
+        if let Err(e) = run_self_test() {
+            eprintln!("self-test failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     if args.list || args.play_default || !args.play.is_empty() {
         if let Err(e) = run_cli(args) {
@@ -58,14 +69,33 @@ fn run_tauri() {
         }
     };
 
+    let session_path = Arc::new(RwLock::new(None::<PathBuf>));
+
     let state = AppState {
         engine,
         sync,
+        _outputs: outputs,
         i18n: i18n_inst,
+        session_path: session_path.clone(),
     };
 
     tauri::Builder::default()
         .manage(state)
+        .setup(move |app| {
+            // Path resolver доступен только после Tauri-setup. Сохраняем
+            // абсолютный путь к session.json в state.
+            match app.path().app_data_dir() {
+                Ok(dir) => {
+                    let path = dir.join("session.json");
+                    tracing::info!(?path, "session profile path resolved");
+                    *session_path.write() = Some(path);
+                }
+                Err(e) => {
+                    tracing::warn!(?e, "app_data_dir not available; profiles disabled");
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_outputs,
             commands::list_all_devices,
@@ -77,16 +107,207 @@ fn run_tauri() {
             commands::set_output_volume,
             commands::set_output_muted,
             commands::set_output_balance,
+            commands::set_output_eq,
             commands::set_output_latency,
+            commands::set_all_latencies,
             commands::target_latency_ms,
             commands::sync_status,
             commands::play_test_signal,
             commands::stop_test_signal,
             commands::load_dictionary,
             commands::format_message,
+            commands::master_state,
+            commands::set_master_gain,
+            commands::set_master_muted,
+            commands::peaks,
+            commands::load_session_profile,
+            commands::save_session_profile,
+            commands::generate_calibration_chirp,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Zound");
+}
+
+// ---------- self-test (CI smoke) ---------- //
+
+/// Headless smoke-тест для CI. Не открывает реальных аудио-стримов
+/// (Linux-раннеры без PulseAudio упадут на capture), но проверяет всю
+/// платформо-независимую логику end-to-end:
+///
+///   1. SyncEngine: target latency, set_all_latencies, drift snapshot.
+///   2. OutputManager + MasterControls roundtrip.
+///   3. AudioEngine spawn/Drop без зависов.
+///   4. ThreeBandEq: bypass / non-bypass / clamp / process inplace.
+///   5. SessionProfile: save → load roundtrip в temp_dir.
+///   6. DriftCorrector: deadband / sign / cap.
+///   7. Calibration: chirp + cross_correlation lag detection.
+///   8. I18n: ru/en bundles parity + format с placeholder.
+///
+/// Если любой шаг упадёт — exit code 1, CI красный. На macOS / Linux
+/// этот self-test исполняется тем же бинарником через CI workflow.
+fn run_self_test() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Instant;
+    use zound_core::{DeviceId, ThreeBandEq};
+    use zound_output::{DevicePreset, MasterControls, SessionProfile, Volume};
+    use zound_sync::{cross_correlation_peak, generate_chirp, DriftCorrector};
+
+    let started = Instant::now();
+    println!("== Zound self-test ==");
+    println!(
+        "  platform: {} {} ({})",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        std::env::consts::FAMILY
+    );
+
+    // 1. SyncEngine
+    let sync = Arc::new(SyncEngine::new());
+    let id_a = DeviceId::from("a");
+    let id_b = DeviceId::from("b");
+    sync.add_device(id_a.clone(), Duration::from_millis(50), 48_000);
+    sync.add_device(id_b.clone(), Duration::from_millis(150), 48_000);
+    let target = sync.target_latency();
+    if target.as_millis() < 150 {
+        return Err(format!("expected target ≥ 150 ms, got {target:?}").into());
+    }
+    let n = sync.set_all_latencies(Duration::from_millis(80));
+    if n != 2 {
+        return Err(format!("set_all_latencies affected {n}, expected 2").into());
+    }
+    let snap = sync.drift_snapshot();
+    if !snap.in_sync {
+        return Err("drift_snapshot must be in_sync when no pushes happened".into());
+    }
+    println!("  ✓ sync engine (target={} ms)", target.as_millis());
+
+    // 2. OutputManager + Master
+    let outputs = Arc::new(OutputManager::new());
+    outputs.add(id_a.clone());
+    outputs.set_volume(&id_a, Volume(0.5))?;
+    let st = outputs.state(&id_a).ok_or("missing state")?;
+    if (st.volume.0 - 0.5).abs() > 1e-6 {
+        return Err("volume not stored".into());
+    }
+    let m = MasterControls::new();
+    m.set_gain(0.7);
+    m.set_muted(true);
+    if m.effective_gain() != 0.0 {
+        return Err("master mute must zero effective gain".into());
+    }
+    m.set_muted(false);
+    if (m.effective_gain() - 0.7).abs() > 1e-6 {
+        return Err("master gain restored after unmute".into());
+    }
+    println!("  ✓ output manager + master controls");
+
+    // 3. AudioEngine spawn/drop
+    let engine = AudioEngine::new(sync.clone(), outputs.clone());
+    if !engine.active_outputs().is_empty() {
+        return Err("freshly-built engine must have no active outputs".into());
+    }
+    drop(engine);
+    println!("  ✓ audio engine spawn/drop");
+
+    // 4. EQ — bypass, non-bypass, clamp, inplace
+    let mut eq = ThreeBandEq::new(48_000.0);
+    if !eq.is_bypass() {
+        return Err("flat EQ must start in bypass".into());
+    }
+    eq.set_low_gain(50.0);
+    if eq.low.gain_db != 12.0 {
+        return Err("EQ gain must clamp to +12 dB".into());
+    }
+    eq.set_low_gain(0.0);
+    eq.set_mid_gain(6.0);
+    if eq.is_bypass() {
+        return Err("EQ with non-zero gain must not bypass".into());
+    }
+    let mut buf = vec![0.5_f32; 480 * 2];
+    let original = buf.clone();
+    eq.process_interleaved(&mut buf, 2);
+    if buf == original {
+        return Err("EQ process must mutate buffer when not bypass".into());
+    }
+    println!("  ✓ three-band EQ");
+
+    // 5. SessionProfile roundtrip в temp_dir
+    let dir = std::env::temp_dir().join(format!("zound-selftest-{}", std::process::id()));
+    let path = dir.join("session.json");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let profile = SessionProfile {
+        master_gain: 0.42,
+        master_muted: true,
+        devices: vec![DevicePreset {
+            name: "selftest-device".into(),
+            volume: 0.33,
+            muted: false,
+            balance: -0.5,
+            latency_ms: 77,
+        }],
+        ..SessionProfile::default()
+    };
+    profile
+        .save_to(&path)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let loaded = SessionProfile::load_from(&path)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
+        .ok_or("profile must load after save")?;
+    if loaded != profile {
+        return Err("profile roundtrip mismatch".into());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("  ✓ session profile roundtrip");
+
+    // 6. DriftCorrector
+    let mut drift = DriftCorrector::new();
+    let small = drift.update(1_000, Duration::from_millis(100));
+    if small != 0.0 {
+        return Err("drift inside deadband must give zero correction".into());
+    }
+    let big = drift.update(50_000, Duration::from_millis(100));
+    if big >= 0.0 {
+        return Err("positive error → negative correction".into());
+    }
+    let bigger = drift.update(1_000_000_000, Duration::from_millis(100));
+    if bigger.abs() > 0.001 + 1e-6 {
+        return Err("drift correction must cap to ±0.1 %".into());
+    }
+    println!("  ✓ drift PI controller");
+
+    // 7. Calibration
+    let sr: u32 = 48_000;
+    let samples: usize = (sr / 5) as usize; // 200 ms
+    let reference = generate_chirp(sr, samples, 0.5);
+    let pad = 2_400;
+    let mut recorded = vec![0.0_f32; pad];
+    recorded.extend_from_slice(&reference);
+    recorded.extend(vec![0.0_f32; 1_000]);
+    let lag = cross_correlation_peak(&recorded, &reference);
+    if lag != pad {
+        return Err(format!("expected lag {pad}, got {lag}").into());
+    }
+    println!("  ✓ calibration (chirp + correlation, lag={lag})");
+
+    // 8. I18n bundles
+    let i18n = i18n::I18n::new().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let ru = i18n.dictionary("ru");
+    let en = i18n.dictionary("en");
+    if ru.is_empty() || en.is_empty() {
+        return Err("dictionaries must not be empty".into());
+    }
+    let missing_ru: Vec<_> = en.keys().filter(|k| !ru.contains_key(*k)).collect();
+    let missing_en: Vec<_> = ru.keys().filter(|k| !en.contains_key(*k)).collect();
+    if !missing_ru.is_empty() || !missing_en.is_empty() {
+        return Err(format!(
+            "i18n parity broken: missing in ru={missing_ru:?}, missing in en={missing_en:?}"
+        )
+        .into());
+    }
+    println!("  ✓ i18n parity ({} keys)", ru.len());
+
+    println!("OK ({:?})", started.elapsed());
+    Ok(())
 }
 
 // ---------- CLI ---------- //
@@ -171,8 +392,21 @@ fn list_devices(backend: &CpalBackend) {
 // ---------- общее ---------- //
 
 fn init_logging() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Конвенция: по умолчанию `info` для нашего кода и `warn` для шумных
+    // зависимостей. `RUST_LOG` переопределяет всё (стандартный путь
+    // `tracing-subscriber::EnvFilter`).
+    //
+    // Поднять подробности в debug:  `RUST_LOG=zound=debug,info`
+    // Тихий режим:                  `RUST_LOG=zound=warn`
+    let default_filter = "info,zound=info,zound_output=info,zound_platform=info,\
+                          zound_sync=info,wry=warn,tao=warn,winit=warn";
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_level(true)
+        .init();
 }
 
 struct Args {
@@ -180,6 +414,7 @@ struct Args {
     play: Vec<String>,
     play_default: bool,
     duration: u64,
+    self_test: bool,
 }
 
 fn parse_args<I: Iterator<Item = String>>(args: I) -> Args {
@@ -188,6 +423,7 @@ fn parse_args<I: Iterator<Item = String>>(args: I) -> Args {
         play: Vec::new(),
         play_default: false,
         duration: 5,
+        self_test: false,
     };
     let mut it = args;
     while let Some(a) = it.next() {
@@ -199,6 +435,7 @@ fn parse_args<I: Iterator<Item = String>>(args: I) -> Args {
                 }
             }
             "--play-default" => out.play_default = true,
+            "--self-test" => out.self_test = true,
             "--duration" => {
                 if let Some(s) = it.next() {
                     if let Ok(n) = s.parse::<u64>() {

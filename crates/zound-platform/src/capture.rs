@@ -250,6 +250,10 @@ mod linux {
 
     pub fn open(opts: CaptureOpts) -> Result<Capture> {
         // 1. Узнаём имя default sink-а, чтобы сформировать <sink>.monitor.
+        // Слушаем мы `.monitor`-source, но в `CaptureSession.source_name`
+        // храним имя самого sink-а (без суффикса) — оно совпадает с тем,
+        // что выдаёт `enumerate_outputs()`, и feedback-блокер/UI сравнивают
+        // строки напрямую без знаний о Pulse-специфике.
         let default_sink = discover_default_sink()
             .map_err(|e| Error::Backend(format!("pulse discover default sink: {e}")))?;
         let monitor_source = format!("{default_sink}.monitor");
@@ -335,7 +339,7 @@ mod linux {
                 }),
                 channels,
                 sample_rate,
-                source_name: monitor_source,
+                source_name: default_sink,
             },
             consumer,
         })

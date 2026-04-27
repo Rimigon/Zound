@@ -9,6 +9,15 @@
 //! калибровка и компенсация дрейфа (PLL-подобная коррекция ресемплинга)
 //! — после MVP. Детали в `.claude/skills/zound-audio-sync/SKILL.md`.
 
+pub mod calibration;
+pub mod drift;
+
+pub use calibration::{
+    cross_correlation_peak, generate_chirp, lag_to_micros, CalibrationOutcome,
+    DEFAULT_CHIRP_DURATION_MS,
+};
+pub use drift::{DriftCorrector, DEADBAND_MICROS, MAX_CORRECTION};
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -104,6 +113,20 @@ impl SyncEngine {
         Self::recalculate(&mut inner);
     }
 
+    /// Поставить одинаковую intrinsic latency всем устройствам сразу.
+    /// Используется UI-режимом «связанные задержки»: пользователь крутит
+    /// один слайдер, все остальные подтягиваются. Возвращает количество
+    /// затронутых устройств.
+    pub fn set_all_latencies(&self, latency: Duration) -> usize {
+        let mut inner = self.inner.write();
+        let n = inner.devices.len();
+        for params in inner.devices.values_mut() {
+            params.intrinsic_latency = latency;
+        }
+        Self::recalculate(&mut inner);
+        n
+    }
+
     /// Ручная корректировка intrinsic latency (слайдер в UI).
     pub fn set_device_latency(&self, id: &DeviceId, latency: Duration) -> Result<()> {
         let mut inner = self.inner.write();
@@ -127,6 +150,34 @@ impl SyncEngine {
 
     pub fn device_count(&self) -> usize {
         self.inner.read().devices.len()
+    }
+
+    /// Per-device смещение в micros относительно среднего по «живым»
+    /// устройствам. Положительное = устройство опережает агрегат
+    /// (нужно замедлить). Используется адаптивным `DriftCorrector` в
+    /// audio-thread.
+    ///
+    /// При <2 живых устройств возвращает пустой Vec (корректировка не
+    /// нужна).
+    pub fn per_device_errors(&self) -> Vec<(DeviceId, i64)> {
+        let inner = self.inner.read();
+        let mut samples: Vec<(DeviceId, u64)> = Vec::new();
+        for (id, p) in inner.devices.iter() {
+            let t = p.last_push_micros.load(Ordering::Relaxed);
+            if t != 0 {
+                samples.push((id.clone(), t));
+            }
+        }
+        if samples.len() < 2 {
+            return Vec::new();
+        }
+        let mean: i128 =
+            samples.iter().map(|(_, t)| *t as i128).sum::<i128>() / samples.len() as i128;
+        samples
+            .into_iter()
+            .map(|(id, t)| (id, t as i128 - mean))
+            .map(|(id, e)| (id, e.clamp(i64::MIN as i128, i64::MAX as i128) as i64))
+            .collect()
     }
 
     /// Снимок drift между устройствами. drift = max - min последних
@@ -230,5 +281,30 @@ mod tests {
         let eng = SyncEngine::new();
         let err = eng.set_device_latency(&DeviceId::from("ghost"), ms(100));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn set_all_latencies_applies_to_every_device() {
+        let eng = SyncEngine::new();
+        eng.add_device(DeviceId::from("a"), ms(20), 48_000);
+        eng.add_device(DeviceId::from("b"), ms(150), 48_000);
+        eng.add_device(DeviceId::from("c"), ms(80), 48_000);
+
+        let n = eng.set_all_latencies(ms(100));
+        assert_eq!(n, 3);
+
+        // У всех intrinsic = 100, значит compensation = margin (одна и та же).
+        for id in ["a", "b", "c"] {
+            let p = eng.device_params(&DeviceId::from(id)).unwrap();
+            assert_eq!(p.intrinsic_latency, ms(100));
+            assert_eq!(p.compensation_delay, MIN_SAFETY_MARGIN);
+        }
+        assert_eq!(eng.target_latency(), ms(100) + MIN_SAFETY_MARGIN);
+    }
+
+    #[test]
+    fn set_all_latencies_on_empty_returns_zero() {
+        let eng = SyncEngine::new();
+        assert_eq!(eng.set_all_latencies(ms(100)), 0);
     }
 }

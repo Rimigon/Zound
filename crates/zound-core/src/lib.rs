@@ -4,11 +4,13 @@
 //! происходит на границах — в `zound-platform` (capture/output).
 
 pub mod device;
+pub mod eq;
 pub mod error;
 pub mod frame;
 pub mod sample;
 
 pub use device::{DeviceId, DeviceInfo, DeviceKind};
+pub use eq::{Biquad, EqBand, ThreeBandEq};
 pub use error::Error;
 pub use frame::AudioFrame;
 pub use sample::SampleFormat;

@@ -21,38 +21,51 @@
   </head>
   <body>
     <header class="bar">
-      <div class="brand">
-        <img class="logo" src="logo.png" alt="Zound" />
+      <div class="brand-text">
+        <h1 data-i18n="app-title">Zound</h1>
+        <p class="subtitle" data-i18n="app-subtitle"></p>
       </div>
       <div class="controls">
-        <button id="theme-toggle" class="icon-btn" data-i18n-title="theme-toggle-title" aria-label="Toggle theme">🌓</button>
-        <label for="lang" data-i18n="language-label">Язык</label>
-        <select id="lang">
+        <div class="master-controls" id="master-controls">
+          <label class="master-mute-wrap">
+            <input type="checkbox" id="master-mute" />
+            <span class="master-mute-icon" data-i18n-title="master-mute" aria-hidden="true">🔇</span>
+          </label>
+          <input type="range" id="master-gain" min="0" max="100" value="100" data-i18n-title="master-label" />
+          <span class="master-gain-value" id="master-gain-value">100%</span>
+        </div>
+        <label class="toggle inline">
+          <input type="checkbox" id="show-all-devices" />
+          <span data-i18n="show-all-devices">Показывать все устройства</span>
+        </label>
+        <select id="lang" aria-label="Language">
           <option value="ru" data-i18n="language-ru">Русский</option>
           <option value="en" data-i18n="language-en">English</option>
         </select>
+        <button id="theme-toggle" class="icon-btn" data-i18n-title="theme-toggle-title" aria-label="Toggle theme">🌓</button>
         <button id="engine-toggle" class="primary" data-i18n="engine-start">Запустить</button>
       </div>
     </header>
 
     <main>
       <section class="panel">
-        <div class="panel-head">
-          <h2 data-i18n="nav-devices">Устройства</h2>
-          <div class="badges">
-            <span id="sync-status" class="badge sync-badge hidden"></span>
-            <span id="target-latency" class="badge"></span>
-          </div>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="show-all-devices" />
-          <span data-i18n="show-all-devices">Показывать все устройства</span>
-        </label>
+        <h2 data-i18n="nav-devices">Устройства</h2>
+        <div id="default-source-warning" class="hint warning hidden"></div>
         <div id="devices" class="devices"></div>
       </section>
 
       <section class="panel">
-        <h2 data-i18n="nav-sync">Синхронизация</h2>
+        <div class="panel-head">
+          <h2 data-i18n="nav-sync">Синхронизация</h2>
+          <div class="badges">
+            <label class="toggle inline" data-i18n-title="latency-link-title">
+              <input type="checkbox" id="latency-link" />
+              <span data-i18n="latency-link-label">Связать задержки</span>
+            </label>
+            <span id="sync-status" class="badge sync-badge hidden"></span>
+            <span id="target-latency" class="badge hidden"></span>
+          </div>
+        </div>
         <p class="hint" data-i18n="sync-hint">
           Для каждого активного устройства можно вручную подстраивать
           задержку. Ползунки влияют на общую целевую задержку.

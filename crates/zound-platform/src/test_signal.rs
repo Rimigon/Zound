@@ -19,9 +19,12 @@ use crate::sample_convert::FromF32;
 /// Тип тест-сигнала.
 #[derive(Debug, Clone, Copy)]
 pub enum TestKind {
-    /// Одиночный 5 мс импульс (квадратная волна), потом тишина и stop.
+    /// Серия из `CLICK_REPEATS` коротких щелчков 1 кГц с `CLICK_INTERVAL_MS`
+    /// между ними. Позволяет на слух прикинуть latency между устройствами.
+    /// После последнего клика стрим самопрекращается.
     Click,
-    /// 5 секунд тон 1 кГц, потом stop.
+    /// Тон 1 кГц длительностью `SINE_DURATION_SEC` с fade-in/out, чтобы не
+    /// было щелчка на старте и стопе.
     Sine1kHz,
     /// Метроном: периодические клики до Stop. BPM 40-240.
     Metronome { bpm: u16 },
@@ -50,14 +53,48 @@ impl TestStream {
 /// чтобы калибровка не зависела от пользовательских настроек.
 const TEST_AMPLITUDE: f32 = 0.5;
 
-/// Длина одиночного «щелчка» — короткий импульс ~5 мс @ 48 kHz.
-const CLICK_DURATION_MS: f32 = 5.0;
+/// Длина одного «щелчка» — короткий тональный импульс с envelope.
+const CLICK_DURATION_MS: f32 = 10.0;
+
+/// Сколько щелчков играет TestKind::Click при одном Start.
+const CLICK_REPEATS: u32 = 5;
+
+/// Интервал между щелчками в серии.
+const CLICK_INTERVAL_MS: f32 = 1000.0;
+
+/// Частота тона внутри щелчка / удара метронома.
+const CLICK_TONE_HZ: f32 = 1000.0;
+
+/// Длительность атаки/релиза raised-cosine envelope. Без неё резкий старт
+/// тона даёт aliasing-«квак» вместо чистого щелчка.
+const RAMP_MS: f32 = 1.0;
 
 /// Длина sine-сигнала.
 const SINE_DURATION_SEC: f32 = 5.0;
 
 /// Частота sine-тона.
 const SINE_FREQ_HZ: f32 = 1000.0;
+
+/// Fade-in/out для sine, чтобы старт/стоп были без щелчка.
+const SINE_FADE_MS: f32 = 50.0;
+
+/// Raised-cosine envelope для одного «выстрела» длиной `total` семплов
+/// с симметричной атакой/релизом длиной `ramp`. Возвращает 0..=1.
+fn ramp_env(pos: u32, total: u32, ramp: u32) -> f32 {
+    if total == 0 {
+        return 0.0;
+    }
+    let ramp = ramp.min(total / 2).max(1);
+    if pos < ramp {
+        let x = pos as f32 / ramp as f32;
+        0.5 * (1.0 - (std::f32::consts::PI * x).cos())
+    } else if pos >= total - ramp {
+        let x = (total - 1 - pos) as f32 / ramp as f32;
+        0.5 * (1.0 - (std::f32::consts::PI * x).cos())
+    } else {
+        1.0
+    }
+}
 
 /// Открыть тест-стрим на устройстве по имени.
 pub fn start_test_stream(device_name: &str, kind: TestKind) -> Result<TestStream> {
@@ -120,40 +157,94 @@ struct GenState {
     channels: u16,
     /// Глобальный sample-counter (interleaved frames).
     samples_played: u64,
-    /// Sample'ов до следующего beat'а (только Metronome).
-    samples_to_next_beat: u32,
-    /// Sample'ов осталось проиграть текущий «click» внутри beat'а.
-    click_samples_left: u32,
-    /// Phase для Sine [0; TAU).
+    /// Длительность одного клика в семплах (общая для Click/Metronome).
+    click_total: u32,
+    /// Атака/релиз envelope в семплах.
+    ramp_samples: u32,
+    /// Тон-фаза клика [0; TAU).
+    click_phase: f32,
+    /// Позиция внутри текущего клика (0..click_total). Если >= click_total —
+    /// клик не играет, сейчас тишина.
+    click_pos: u32,
+    /// Сэмплов до следующего клика (Click-серия / Metronome).
+    samples_to_next_click: u32,
+    /// Сколько кликов уже отыграло (только Click-серия).
+    clicks_done: u32,
+    /// Sine: общая длина и длина fade'а в семплах.
+    sine_total: u64,
+    sine_fade: u32,
+    /// Sine phase [0; TAU).
     sine_phase: f32,
     stop_flag: Arc<AtomicBool>,
 }
 
 impl GenState {
     fn new(kind: TestKind, sample_rate: u32, channels: u16, stop_flag: Arc<AtomicBool>) -> Self {
-        let click_total = (sample_rate as f32 * CLICK_DURATION_MS / 1000.0) as u32;
-        let beat_interval = match kind {
+        let sr = sample_rate as f32;
+        let click_total = (sr * CLICK_DURATION_MS / 1000.0).max(1.0) as u32;
+        let ramp_samples = (sr * RAMP_MS / 1000.0).max(1.0) as u32;
+
+        // Для Click-серии и Metronome первый клик стартует немедленно
+        // (click_pos = 0); для Sine клика нет.
+        let click_pos = match kind {
+            TestKind::Click | TestKind::Metronome { .. } => 0,
+            TestKind::Sine1kHz => click_total, // вне клика
+        };
+        let samples_to_next_click = match kind {
+            TestKind::Click => (sr * CLICK_INTERVAL_MS / 1000.0) as u32,
             TestKind::Metronome { bpm } => {
                 let bpm = bpm.clamp(40, 240) as u32;
                 sample_rate * 60 / bpm
             }
-            _ => 0,
+            TestKind::Sine1kHz => 0,
         };
-        let initial_click = match kind {
-            TestKind::Click => click_total,
-            TestKind::Metronome { .. } => click_total, // первый бит на старте
-            _ => 0,
-        };
+
+        let sine_total = (sr * SINE_DURATION_SEC) as u64;
+        let sine_fade = (sr * SINE_FADE_MS / 1000.0).max(1.0) as u32;
+
         Self {
             kind,
             sample_rate,
             channels,
             samples_played: 0,
-            samples_to_next_beat: beat_interval,
-            click_samples_left: initial_click,
+            click_total,
+            ramp_samples,
+            click_phase: 0.0,
+            click_pos,
+            samples_to_next_click,
+            clicks_done: 0,
+            sine_total,
+            sine_fade,
             sine_phase: 0.0,
             stop_flag,
         }
+    }
+
+    /// Один сэмпл одного клика-«импульса». Двигает фазу и позицию,
+    /// применяет raised-cosine envelope. Возвращает 0.0 если клик закончился.
+    ///
+    /// Сигнал — sin(2π·f·t) с `ramp_env`. Чистый синус 1 кГц в окне
+    /// raised-cosine — это band-limited импульс с энергией только вокруг
+    /// 1 кГц и энвелопными боковыми лепестками: щадит твитер, не даёт
+    /// «квака» и DC-смещения. Альтернативная пред-баканная WAV-таблица
+    /// (через FFT-оконные click-pulses) дала бы тот же effect, но при
+    /// добавила бы ~5 КБ static data без аудиторского выигрыша.
+    fn click_sample(&mut self) -> f32 {
+        if self.click_pos >= self.click_total {
+            return 0.0;
+        }
+        let env = ramp_env(self.click_pos, self.click_total, self.ramp_samples);
+        // Дополнительное low-pass smoothing амплитуды через cos²-окно
+        // поверх ramp_env. Это режет HF-края клика на ~6 dB ниже,
+        // повторяет поведение «Hann × Hann» из window-design DSP.
+        let smooth = env * env;
+        let s = self.click_phase.sin() * TEST_AMPLITUDE * smooth;
+        self.click_phase += TAU * CLICK_TONE_HZ / self.sample_rate as f32;
+        if self.click_phase >= TAU {
+            self.click_phase -= TAU;
+        }
+        self.click_pos += 1;
+        s
     }
 
     /// Сгенерировать один f32-sample (один frame, моно). Возвращает 0.0
@@ -162,58 +253,62 @@ impl GenState {
         if self.stop_flag.load(Ordering::Relaxed) {
             return 0.0;
         }
-        let sr = self.sample_rate as f32;
-        let click_total = (sr * CLICK_DURATION_MS / 1000.0) as u32;
 
         let value = match self.kind {
             TestKind::Click => {
-                if self.click_samples_left > 0 {
-                    self.click_samples_left -= 1;
-                    // Square-wave для slabого «щелчка», но звучит как clean click.
-                    if (self.samples_played / (sr as u64 / 2000).max(1)) % 2 == 0 {
-                        TEST_AMPLITUDE
-                    } else {
-                        -TEST_AMPLITUDE
+                let s = self.click_sample();
+                if self.click_pos >= self.click_total {
+                    // Клик завершился — отсчитываем паузу до следующего.
+                    if self.samples_to_next_click > 0 {
+                        self.samples_to_next_click -= 1;
+                        if self.samples_to_next_click == 0 {
+                            self.clicks_done += 1;
+                            if self.clicks_done >= CLICK_REPEATS {
+                                self.stop_flag.store(true, Ordering::Relaxed);
+                            } else {
+                                self.click_pos = 0;
+                                self.click_phase = 0.0;
+                                self.samples_to_next_click =
+                                    (self.sample_rate as f32 * CLICK_INTERVAL_MS / 1000.0) as u32;
+                            }
+                        }
                     }
-                } else {
-                    // Click отыграл → self-terminate.
-                    self.stop_flag.store(true, Ordering::Relaxed);
-                    0.0
                 }
+                s
             }
             TestKind::Sine1kHz => {
-                let total = (sr * SINE_DURATION_SEC) as u64;
-                if self.samples_played >= total {
+                if self.samples_played >= self.sine_total {
                     self.stop_flag.store(true, Ordering::Relaxed);
                     return 0.0;
                 }
-                let s = (self.sine_phase).sin() * TEST_AMPLITUDE;
-                self.sine_phase += TAU * SINE_FREQ_HZ / sr;
+                let pos = self.samples_played;
+                let fade = self.sine_fade as u64;
+                // Линейный 0..1 в зонах fade, raised-cosine на нём.
+                let lin = if pos < fade {
+                    pos as f32 / fade as f32
+                } else if pos + fade >= self.sine_total {
+                    (self.sine_total - 1 - pos) as f32 / fade as f32
+                } else {
+                    1.0
+                };
+                let env = 0.5 * (1.0 - (std::f32::consts::PI * lin).cos());
+                let s = self.sine_phase.sin() * TEST_AMPLITUDE * env;
+                self.sine_phase += TAU * SINE_FREQ_HZ / self.sample_rate as f32;
                 if self.sine_phase >= TAU {
                     self.sine_phase -= TAU;
                 }
                 s
             }
-            TestKind::Metronome { .. } => {
-                let s = if self.click_samples_left > 0 {
-                    self.click_samples_left -= 1;
-                    if (self.samples_played / (sr as u64 / 2000).max(1)) % 2 == 0 {
-                        TEST_AMPLITUDE
-                    } else {
-                        -TEST_AMPLITUDE
+            TestKind::Metronome { bpm } => {
+                let s = self.click_sample();
+                if self.click_pos >= self.click_total && self.samples_to_next_click > 0 {
+                    self.samples_to_next_click -= 1;
+                    if self.samples_to_next_click == 0 {
+                        let bpm = bpm.clamp(40, 240) as u32;
+                        self.click_pos = 0;
+                        self.click_phase = 0.0;
+                        self.samples_to_next_click = self.sample_rate * 60 / bpm;
                     }
-                } else {
-                    0.0
-                };
-                if self.samples_to_next_beat == 0 {
-                    self.click_samples_left = click_total;
-                    let bpm = match self.kind {
-                        TestKind::Metronome { bpm } => bpm.clamp(40, 240) as u32,
-                        _ => 120,
-                    };
-                    self.samples_to_next_beat = self.sample_rate * 60 / bpm;
-                } else {
-                    self.samples_to_next_beat -= 1;
                 }
                 s
             }

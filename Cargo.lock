@@ -71,7 +71,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "app"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fluent-bundle",
  "parking_lot",
@@ -5595,7 +5595,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zound-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "thiserror 1.0.69",
  "tracing",
@@ -5603,11 +5603,13 @@ dependencies = [
 
 [[package]]
 name = "zound-output"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "parking_lot",
  "ringbuf",
  "rubato",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tracing",
  "zound-core",
@@ -5617,7 +5619,7 @@ dependencies = [
 
 [[package]]
 name = "zound-platform"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "core-foundation-sys",
  "coreaudio-sys",
@@ -5635,7 +5637,7 @@ dependencies = [
 
 [[package]]
 name = "zound-sync"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "parking_lot",
  "thiserror 1.0.69",

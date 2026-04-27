@@ -78,6 +78,20 @@ impl AudioBackend for CpalBackend {
                 .map_err(|e| Error::Backend(e.to_string()))?;
 
             Ok(devices
+                // На Linux PipeWire/Pulse cpal иногда отдаёт monitor-source
+                // в `output_devices()`. Это виртуальный input от существующего
+                // sink — играть в него нельзя, и в UI он только мешает.
+                .filter(|d| {
+                    #[cfg(target_os = "linux")]
+                    {
+                        !d.name().map(|n| n.ends_with(".monitor")).unwrap_or(false)
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        let _ = d;
+                        true
+                    }
+                })
                 .map(|d| {
                     let is_default = default_name
                         .as_deref()

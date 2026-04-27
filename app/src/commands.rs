@@ -1,14 +1,16 @@
 //! Tauri команды — тонкий фасад над AudioEngine и i18n.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Serialize;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use zound_core::DeviceId;
-use zound_output::AudioEngine;
+use zound_output::{AudioEngine, DevicePreset, OutputManager, SessionProfile};
 use zound_platform::{AudioBackend, CpalBackend, TestKind};
 use zound_sync::SyncEngine;
 
@@ -18,7 +20,14 @@ use crate::i18n::I18n;
 pub struct AppState {
     pub engine: Arc<AudioEngine>,
     pub sync: Arc<SyncEngine>,
+    /// Хранится для будущих master-related-команд, читается через
+    /// `engine.master_*`. Поле пока не читается напрямую — `_` префикс
+    /// сообщает clippy/dead_code что это намеренно.
+    pub _outputs: Arc<OutputManager>,
     pub i18n: Arc<I18n>,
+    /// Путь к файлу session.json. Заполняется в main после Tauri builder
+    /// resolve-а app data dir, потому здесь — RwLock<Option<...>>.
+    pub session_path: Arc<RwLock<Option<PathBuf>>>,
 }
 
 #[derive(Serialize)]
@@ -80,7 +89,10 @@ pub fn list_all_devices() -> Result<Vec<DeviceDto>, String> {
     // Дублирующие input-стороны duplex-устройств (одно и то же имя в обоих
     // списках) уже попали как output — их пропускаем. В UI остаётся одна
     // строка, она и так с кнопкой «Добавить».
-    for d in inputs.into_iter().filter(|d| !output_names.contains(&d.name)) {
+    for d in inputs
+        .into_iter()
+        .filter(|d| !output_names.contains(&d.name))
+    {
         result.push(DeviceDto {
             id: d.id.to_string(),
             name: d.name,
@@ -146,11 +158,7 @@ pub fn set_output_volume(
 }
 
 #[tauri::command]
-pub fn set_output_muted(
-    state: State<'_, AppState>,
-    id: String,
-    muted: bool,
-) -> Result<(), String> {
+pub fn set_output_muted(state: State<'_, AppState>, id: String, muted: bool) -> Result<(), String> {
     state
         .engine
         .set_muted(&DeviceId::from(id), muted)
@@ -166,6 +174,20 @@ pub fn set_output_balance(
     state
         .engine
         .set_balance(&DeviceId::from(id), balance)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_output_eq(
+    state: State<'_, AppState>,
+    id: String,
+    low_db: f32,
+    mid_db: f32,
+    high_db: f32,
+) -> Result<(), String> {
+    state
+        .engine
+        .set_eq(&DeviceId::from(id), low_db, mid_db, high_db)
         .map_err(|e| e.to_string())
 }
 
@@ -227,6 +249,159 @@ pub fn set_output_latency(
 #[tauri::command]
 pub fn target_latency_ms(state: State<'_, AppState>) -> u64 {
     state.sync.target_latency().as_millis() as u64
+}
+
+/// Применить одинаковую задержку ко всем активным устройствам. Возвращает
+/// сколько устройств затронуто. Используется UI-режимом «связанные
+/// задержки».
+#[tauri::command]
+pub fn set_all_latencies(state: State<'_, AppState>, latency_ms: u64) -> usize {
+    state
+        .sync
+        .set_all_latencies(Duration::from_millis(latency_ms))
+}
+
+// ---------- master controls ---------- //
+
+#[derive(Serialize)]
+pub struct MasterStateDto {
+    pub gain: f32,
+    pub muted: bool,
+}
+
+#[tauri::command]
+pub fn master_state(state: State<'_, AppState>) -> MasterStateDto {
+    MasterStateDto {
+        gain: state.engine.master_gain(),
+        muted: state.engine.master_muted(),
+    }
+}
+
+#[tauri::command]
+pub fn set_master_gain(state: State<'_, AppState>, gain: f32) {
+    state.engine.set_master_gain(gain);
+}
+
+#[tauri::command]
+pub fn set_master_muted(state: State<'_, AppState>, muted: bool) {
+    state.engine.set_master_muted(muted);
+}
+
+// ---------- peak meters ---------- //
+
+#[derive(Serialize)]
+pub struct PeakDto {
+    pub id: String,
+    pub peak: f32,
+}
+
+#[tauri::command]
+pub fn peaks(state: State<'_, AppState>) -> Vec<PeakDto> {
+    state
+        .engine
+        .peaks_snapshot()
+        .into_iter()
+        .map(|(id, p)| PeakDto {
+            id: id.to_string(),
+            peak: p,
+        })
+        .collect()
+}
+
+// ---------- session profile ---------- //
+
+#[derive(Serialize, Deserialize)]
+pub struct ProfileDeviceDto {
+    pub name: String,
+    pub volume: f32,
+    pub muted: bool,
+    pub balance: f32,
+    pub latency_ms: u64,
+}
+
+#[derive(Serialize)]
+pub struct SessionProfileDto {
+    pub devices: Vec<ProfileDeviceDto>,
+    pub master_gain: f32,
+    pub master_muted: bool,
+}
+
+impl From<SessionProfile> for SessionProfileDto {
+    fn from(p: SessionProfile) -> Self {
+        Self {
+            devices: p
+                .devices
+                .into_iter()
+                .map(|d| ProfileDeviceDto {
+                    name: d.name,
+                    volume: d.volume,
+                    muted: d.muted,
+                    balance: d.balance,
+                    latency_ms: d.latency_ms,
+                })
+                .collect(),
+            master_gain: p.master_gain,
+            master_muted: p.master_muted,
+        }
+    }
+}
+
+#[tauri::command]
+pub fn load_session_profile(state: State<'_, AppState>) -> Option<SessionProfileDto> {
+    let path = state.session_path.read().clone()?;
+    match SessionProfile::load_from(&path) {
+        Ok(Some(p)) => Some(p.into()),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(?e, "session profile load failed");
+            None
+        }
+    }
+}
+
+#[tauri::command]
+pub fn save_session_profile(
+    state: State<'_, AppState>,
+    devices: Vec<ProfileDeviceDto>,
+    master_gain: f32,
+    master_muted: bool,
+) -> Result<(), String> {
+    let path = match state.session_path.read().clone() {
+        Some(p) => p,
+        None => return Err("session path not initialized".into()),
+    };
+    let profile = SessionProfile {
+        version: zound_output::profile::PROFILE_VERSION,
+        devices: devices
+            .into_iter()
+            .map(|d| DevicePreset {
+                name: d.name,
+                volume: d.volume,
+                muted: d.muted,
+                balance: d.balance,
+                latency_ms: d.latency_ms,
+            })
+            .collect(),
+        master_gain,
+        master_muted,
+    };
+    profile.save_to(&path)
+}
+
+// ---------- latency calibration (заготовка) ---------- //
+
+/// Сгенерировать chirp-сигнал для измерения. Возвращает f32-массив,
+/// фронт может проиграть его на `device_name` через test-канал, или
+/// записать через capture loopback и сравнить.
+///
+/// Pipeline play+record+correlate ещё не подключён (см.
+/// `zound-sync::calibration` — модуль с алгоритмом). Эта команда дана,
+/// чтобы UI и frontend смогли уже сейчас получить сигнал и запланировать
+/// эксперимент.
+#[tauri::command]
+pub fn generate_calibration_chirp(sample_rate: u32, duration_ms: u32) -> Vec<f32> {
+    let samples = (sample_rate as f32 * duration_ms as f32 / 1000.0) as usize;
+    zound_sync::generate_chirp(sample_rate, samples, 0.5)
 }
 
 #[tauri::command]

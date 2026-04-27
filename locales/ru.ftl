@@ -82,3 +82,32 @@ sync-status-na = —
 status-restore-ok = Сессия восстановлена
 status-restore-failed-one = Не найдено: { $name }
 status-restore-partial = Не восстановлено устройств: { $count }
+
+# v0.4 — master gain/mute, peak meters
+master-label = Общая громкость
+master-mute = Выключить общий звук
+peak-label = Уровень
+latency-link-label = Связать задержки
+latency-link-title = Двигать слайдеры задержки одновременно у всех устройств
+default-source-warning =
+    Источник захвата ({ $source }) — default-устройство Windows. Оно играет
+    напрямую через систему, минуя Zound, поэтому задержку ему добавить
+    нельзя. Чтобы все устройства звучали синхронно, поменяйте default
+    в «Параметрах звука» Windows на placeholder (или виртуальный кабель)
+    и добавьте нужные устройства как Zound-outputs.
+
+# v0.5 — EQ, группы, drift sparkline
+eq-toggle = Эквалайзер
+eq-low = Низкие
+eq-mid = Средние
+eq-high = Высокие
+eq-reset = Сброс
+device-reset = Сбросить настройки
+device-reset-title = Вернуть громкость, задержку, баланс, mute и EQ к дефолтам
+group-label = Группа
+group-none = Без группы
+group-new = Новая…
+group-new-prompt = Имя новой группы:
+group-volume = Громкость группы
+group-mute = Без звука
+group-latency = Задержка группы

@@ -40,7 +40,41 @@ body {
   color: var(--text);
   font-size: 14px;
   line-height: 1.45;
+  /* Стабильный glyph-positioning: kerning ускоряет subpixel-сдвиги
+     при repaint, geometricPrecision округляет позиции к целым px и
+     убирает «дрожание» имён при перерисовке соседних элементов. */
+  text-rendering: geometricPrecision;
+}
+
+html {
   height: 100%;
+}
+
+/* Body — единый non-scrollable контейнер во всё окно. Скроллится
+   только содержимое внутри main (или его дочерних панелей).
+   Так body никогда не получает scrollbar и ширина viewport не
+   меняется → панели не дёргаются. */
+body {
+  height: 100vh;
+  overflow: hidden;
+  max-width: 100vw;
+}
+
+/* Тонкие кастомные скроллбары — занимают 8px вместо 17px Windows-
+   default, и наложены поверх (overlay-style), не съедают layout. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
 }
 
 body {
@@ -66,31 +100,26 @@ body {
   color: var(--muted);
 }
 
-.brand {
+.brand-text {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
-.brand .logo {
-  display: block;
-  height: 56px;
-  width: auto;
-  /* Лого без фона — содержит сам Z + надпись Zound + слоган.
-     `object-fit: contain` страхует пропорции при вариативной высоте. */
-  object-fit: contain;
-}
-
-h1 {
+.brand-text h1 {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
 }
 
-.subtitle {
+.brand-text .subtitle {
   margin: 0;
   font-size: 12px;
   color: var(--muted);
+  line-height: 1.2;
 }
 
 .toggle {
@@ -108,6 +137,11 @@ h1 {
   margin: 0;
   accent-color: var(--accent);
   cursor: pointer;
+}
+
+.toggle.inline {
+  margin-bottom: 0;
+  white-space: nowrap;
 }
 
 .device-row.input-only {
@@ -129,6 +163,8 @@ h1 {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 select,
@@ -169,16 +205,38 @@ button:disabled {
 }
 
 main {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: row;
   gap: 16px;
   padding: 16px 20px;
   flex: 1;
+  min-width: 0;
+  /* Запрещаем main вытягиваться по содержимому — иначе панели
+     раздувают main, а main раздувает viewport. */
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  /* Никакого скролла на main — каждая панель скроллится отдельно
+     внутри себя. */
+  overflow: hidden;
+  min-height: 0;
+}
+
+main > .panel {
+  /* Ровно по половине доступной ширины main: каждая панель =
+     (100% - gap) / 2 = calc(50% - 8px). flex: 0 0 — фиксированная
+     ширина, не зависит от content-min. */
+  flex: 0 0 calc(50% - 8px);
+  max-width: calc(50% - 8px);
 }
 
 @media (max-width: 800px) {
   main {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+  main > .panel {
+    flex: 0 0 auto;
+    max-width: 100%;
   }
 }
 
@@ -187,7 +245,19 @@ main {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px;
-  overflow: auto;
+  min-width: 0;
+  /* Обе панели одного размера: ширина задана через flex-basis 50%
+     выше, высота — stretch на всю высоту main. */
+  align-self: stretch;
+  /* Скролл внутри панели; место под thin scrollbar (8px) резервируем
+     заранее, чтобы при появлении контента ширина не менялась. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  min-height: 0;
+  /* Изоляция layout — изменения внутри панели не пересчитывают
+     соседнюю. */
+  contain: layout style;
 }
 
 .panel-head {
@@ -237,10 +307,41 @@ h2 {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
+  /* Изоляция: изменения внутри одной строки не пересчитывают layout
+     соседних. Дополнительно убирает 1px-jitter при repaint. */
+  contain: layout paint;
 }
 
-.device-row .info {
+.device-row .info,
+.active-row .info {
   flex: 1;
+  min-width: 0;
+}
+
+/* Действие/правый бейдж в строке устройства — фиксированной ширины,
+   чтобы при смене текста (Добавить → Убрать → только вход → источник)
+   имя устройства не дёргалось. Min-width = по самой длинной строке
+   из локалей. */
+.device-row .action-btn {
+  /* Fixed width (не min-width) — иначе при смене текста кнопки от
+     "Добавить" (8 char) к "Убрать" (6 char) ширина может изменяться
+     по subpixel. Жёстко 96px вне зависимости от content. */
+  width: 96px;
+  min-width: 96px;
+  max-width: 96px;
+  flex-shrink: 0;
+  flex-grow: 0;
+  text-align: center;
+  /* Transition border/background при добавлении устройства триггерил
+     repaint всей строки и subpixel-сдвиг текста имени. Отключаем. */
+  transition: none;
+}
+
+.device-row .test-btn {
+  flex-shrink: 0;
+}
+
+.active-row {
   min-width: 0;
 }
 
@@ -294,21 +395,36 @@ h2 {
   margin-bottom: 12px;
 }
 
+.hint.warning {
+  background: color-mix(in srgb, var(--warn) 12%, var(--panel-2));
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  color: var(--text);
+  margin-bottom: 12px;
+  font-size: 12px;
+  white-space: pre-line;
+}
+
 .sliders {
   display: grid;
-  grid-template-columns: 70px 1fr 60px;
+  grid-template-columns: 70px minmax(0, 1fr) 60px;
   gap: 8px;
   align-items: center;
   margin-top: 10px;
   font-size: 12px;
+  min-width: 0;
 }
 
 .sliders label {
   color: var(--muted);
+  min-width: 0;
 }
 
 .sliders input[type="range"] {
   width: 100%;
+  min-width: 0;
   accent-color: var(--accent);
 }
 
@@ -388,7 +504,7 @@ h2 {
 /* Mute / Balance в active-row. Расширяем .sliders до 4 строк. */
 
 .sliders.with-mixer {
-  grid-template-columns: 70px 1fr 60px;
+  grid-template-columns: 70px minmax(0, 1fr) 60px;
 }
 
 .switch {
@@ -482,7 +598,9 @@ h2 {
 }
 
 .test-btn {
-  padding: 6px 10px;
+  /* `.icon-btn` сам центрирует через `place-items: center` в 32×32-боксе.
+     Padding override ломал центрирование emoji 🔊 — он съезжал вниз. */
+  padding: 0;
 }
 
 .test-popover {
@@ -539,4 +657,235 @@ h2 {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
   font-size: 12px;
+}
+
+/* v0.4 — master controls в шапке + peak meters в active-row */
+
+.master-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  height: 32px;
+  min-width: 0;
+}
+
+.master-controls input[type="range"] {
+  width: 80px;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.master-mute-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.master-mute-wrap input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.master-mute-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--muted);
+  transition: color 0.15s, background 0.15s;
+  font-size: 14px;
+}
+
+.master-mute-wrap input:checked ~ .master-mute-icon {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 18%, transparent);
+}
+
+.master-gain-value {
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Peak meter — узкая полоска под slider-row активного устройства. */
+
+.peak-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.peak-row .peak-label {
+  color: var(--muted);
+  font-size: 11px;
+  width: 70px;
+}
+
+.peak-bar {
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel);
+  overflow: hidden;
+  position: relative;
+}
+
+.peak-row {
+  min-width: 0;
+}
+
+.device-reset-btn {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.peak-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: linear-gradient(90deg, var(--ok) 0%, var(--ok) 60%, var(--warn) 80%, var(--err) 100%);
+  transition: width 0.06s linear;
+}
+
+/* v0.5 — EQ, groups */
+
+.eq-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  min-width: 0;
+}
+
+.eq-row .eq-label {
+  color: var(--muted);
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eq-row .eq-band {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.eq-row .eq-band input[type="range"] {
+  min-width: 0;
+  width: 100%;
+}
+
+.eq-row .eq-band-name {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.eq-row .eq-band-value {
+  font-size: 10px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.eq-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.eq-row .eq-reset {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.eq-row .eq-reset:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.group-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-left: 6px;
+  color: var(--muted);
+}
+
+.group-pill select {
+  background: transparent;
+  border: 0;
+  font-size: 11px;
+  color: var(--text);
+  padding: 0;
+}
+
+.groups-panel {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-2);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.groups-panel .group-row {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.groups-panel .group-row input[type="range"] {
+  min-width: 0;
+  width: 100%;
+}
+
+.groups-panel .group-row .name {
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.groups-panel input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent-2);
+}
+
+.groups-panel .group-mute {
+  font-size: 11px;
+  padding: 2px 8px;
 }

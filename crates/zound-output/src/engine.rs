@@ -24,24 +24,36 @@
 //!                 🎧 A                    🔊 B                    📶 C
 //! ```
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::{Mutex, RwLock};
 use ringbuf::traits::{Consumer, Observer, Producer};
 use rubato::{FastFixedIn, PolynomialDegree, Resampler};
-use zound_core::{DeviceId, Error, Result};
+use zound_core::{DeviceId, Error, Result, ThreeBandEq};
 use zound_platform::{Capture, CaptureOpts, OutputOpts, OutputSink, TestStream};
-use zound_sync::SyncEngine;
+use zound_sync::{DriftCorrector, SyncEngine};
 
+use crate::guard::{is_capture_source, ERR_FEEDBACK_LOOP};
 use crate::OutputManager;
 
 /// Размер чанка, который worker обрабатывает за один проход (в frames
 /// на канал). 480 @ 48 kHz = 10 мс — типичная гранулярность callback-ов.
 const WORKER_CHUNK_FRAMES: usize = 480;
+
+/// Период тика drift-коррекции. Реже не нужен (резонанс с jitter
+/// callback-ов), чаще — даёт всплески интегральной части.
+const DRIFT_TICK: Duration = Duration::from_millis(100);
+
+/// Затухание peak-метра за один worker-tick (10 мс при заполненной
+/// capture-очереди). Линейный множитель: 0.92 ≈ -0.7 dB / tick → -70 dB
+/// за 1 секунду без сигнала. Эмулирует «hold + release» аналоговых
+/// VU-метров.
+const PEAK_DECAY_PER_TICK: f32 = 0.92;
 
 /// Команды, которые внешний API шлёт audio-thread-у.
 enum EngineCmd {
@@ -70,6 +82,21 @@ enum EngineCmd {
         balance: f32,
         reply: SyncSender<Result<(), String>>,
     },
+    SetEq {
+        id: DeviceId,
+        low_db: f32,
+        mid_db: f32,
+        high_db: f32,
+        reply: SyncSender<Result<(), String>>,
+    },
+    SetMasterGain {
+        gain: f32,
+        reply: SyncSender<()>,
+    },
+    SetMasterMuted {
+        muted: bool,
+        reply: SyncSender<()>,
+    },
     PlayTestSignal {
         device_name: String,
         kind: zound_platform::TestKind,
@@ -90,8 +117,12 @@ pub struct AudioEngine {
     /// если capture остановлен). Shared c audio-thread.
     loopback_source: Arc<RwLock<Option<String>>>,
     running: Arc<RwLock<bool>>,
+    /// Per-device peak — последний абсолютный максимум выхода (после
+    /// volume / mute / balance / master). Шарится с UI без локов.
+    /// Значения f32 ∈ [0; ~2.0] закодированы через `to_bits` в u32 atomic.
+    peak_meters: Arc<RwLock<HashMap<DeviceId, Arc<AtomicU32>>>>,
     _sync: Arc<SyncEngine>,
-    _outputs: Arc<OutputManager>,
+    outputs: Arc<OutputManager>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -101,15 +132,22 @@ impl AudioEngine {
         let active_ids = Arc::new(RwLock::new(Vec::<DeviceId>::new()));
         let loopback_source = Arc::new(RwLock::new(None::<String>));
         let running = Arc::new(RwLock::new(false));
+        let peak_meters: Arc<RwLock<HashMap<DeviceId, Arc<AtomicU32>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
 
         let t_sync = sync.clone();
         let t_outputs = outputs.clone();
         let t_active = active_ids.clone();
         let t_loop = loopback_source.clone();
         let t_running = running.clone();
+        let t_peaks = peak_meters.clone();
         let handle = thread::Builder::new()
             .name("zound-audio".into())
-            .spawn(move || audio_thread(cmd_rx, t_sync, t_outputs, t_active, t_loop, t_running))
+            .spawn(move || {
+                audio_thread(
+                    cmd_rx, t_sync, t_outputs, t_active, t_loop, t_running, t_peaks,
+                )
+            })
             .expect("spawn audio thread");
 
         Self {
@@ -117,10 +155,62 @@ impl AudioEngine {
             active_ids,
             loopback_source,
             running,
+            peak_meters,
             _sync: sync,
-            _outputs: outputs,
+            outputs,
             thread: Mutex::new(Some(handle)),
         }
+    }
+
+    /// Линейный peak (0..1+) для устройства за последний tick. None если
+    /// устройство не активно или ещё не обновляло метр.
+    pub fn peak_for(&self, id: &DeviceId) -> Option<f32> {
+        let meters = self.peak_meters.read();
+        meters
+            .get(id)
+            .map(|a| f32::from_bits(a.load(Ordering::Relaxed)))
+    }
+
+    /// Снимок peak-ов всех активных устройств.
+    pub fn peaks_snapshot(&self) -> Vec<(DeviceId, f32)> {
+        let meters = self.peak_meters.read();
+        meters
+            .iter()
+            .map(|(id, a)| (id.clone(), f32::from_bits(a.load(Ordering::Relaxed))))
+            .collect()
+    }
+
+    /// Установить master gain ∈ [0; 1]. Применяется всем активным
+    /// устройствам на следующем чанке.
+    pub fn set_master_gain(&self, gain: f32) {
+        let (tx, rx) = mpsc::sync_channel(1);
+        if self
+            .cmd_tx
+            .send(EngineCmd::SetMasterGain { gain, reply: tx })
+            .is_ok()
+        {
+            let _ = rx.recv();
+        }
+    }
+
+    pub fn set_master_muted(&self, muted: bool) {
+        let (tx, rx) = mpsc::sync_channel(1);
+        if self
+            .cmd_tx
+            .send(EngineCmd::SetMasterMuted { muted, reply: tx })
+            .is_ok()
+        {
+            let _ = rx.recv();
+        }
+    }
+
+    /// Чтение master-gain прямо из `OutputManager` (минуя audio-thread).
+    pub fn master_gain(&self) -> f32 {
+        self.outputs.master().gain()
+    }
+
+    pub fn master_muted(&self) -> bool {
+        self.outputs.master().muted()
     }
 
     /// Открыть loopback-захват. Идемпотентно.
@@ -204,6 +294,24 @@ impl AudioEngine {
             .map_err(Error::Other)
     }
 
+    /// 3-полосный EQ: low / mid / high gain в dB. ±12 dB clamp в worker.
+    /// Все три = 0 → EQ переходит в bypass.
+    pub fn set_eq(&self, id: &DeviceId, low_db: f32, mid_db: f32, high_db: f32) -> Result<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.cmd_tx
+            .send(EngineCmd::SetEq {
+                id: id.clone(),
+                low_db,
+                mid_db,
+                high_db,
+                reply: tx,
+            })
+            .map_err(|_| Error::Other("engine thread gone".into()))?;
+        rx.recv()
+            .map_err(|_| Error::Other("engine thread dropped reply".into()))?
+            .map_err(Error::Other)
+    }
+
     /// Balance L/R, диапазон [-1.0; +1.0]. Применяется только для stereo-
     /// устройств; для mono/4ch+ просто игнорируется (apply skip).
     pub fn set_balance(&self, id: &DeviceId, balance: f32) -> Result<()> {
@@ -261,9 +369,8 @@ impl Drop for AudioEngine {
     }
 }
 
-/// Специальная ошибка: запрос добавить default-устройство как output —
-/// приведёт к feedback loop, поэтому отклоняем на входе.
-pub const ERR_FEEDBACK_LOOP: &str = "feedback-default-blocked";
+// `ERR_FEEDBACK_LOOP` теперь живёт в `crate::guard`. Реэкспорт сделан
+// через `crate::lib`.
 
 // ---------- внутри audio-thread ---------- //
 
@@ -283,6 +390,26 @@ struct WorkerOutput {
     /// Timestamp последнего успешного push в ringbuf, micros UNIX epoch.
     /// Шарится с `SyncEngine` для агрегации drift между устройствами.
     last_push_micros: Arc<AtomicU64>,
+    /// Peak-метр (атомарно шарится с UI). f32 bits в u32.
+    peak_bits: Arc<AtomicU32>,
+    /// PI-контроллер дрейфа. Хранит интегральную часть и последнюю
+    /// корректировку. Применяется в `push_to_output` к выходному
+    /// буферу через линейный stretch (не через rubato — rubato
+    /// `FastFixedIn` не умеет менять ratio в рантайме без re-init).
+    drift: DriftCorrector,
+    /// Сколько interleaved-семплов компенсации мы УЖЕ применили к этому
+    /// устройству (положительные = добавили тишины, отрицательные =
+    /// съели). При каждом tick worker сравнивает с
+    /// `compensation_delay`-таргетом из SyncEngine: разницу
+    /// добавляет/выбрасывает чанками ≤ `WORKER_CHUNK_FRAMES`, чтобы
+    /// большие сдвиги latency не создавали скачки на одном кадре.
+    applied_comp_samples: i64,
+    /// `(out_sr, out_channels)` — для перевода `compensation_delay` в
+    /// семплы выходного формата.
+    out_sr: u32,
+    out_channels: u16,
+    /// 3-полосный EQ. В bypass ничего не делает (один if на чанк).
+    eq: ThreeBandEq,
 }
 
 struct ResampleCtx {
@@ -293,6 +420,7 @@ struct ResampleCtx {
     max_output_frames: usize,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn audio_thread(
     cmd_rx: Receiver<EngineCmd>,
     sync: Arc<SyncEngine>,
@@ -300,6 +428,7 @@ fn audio_thread(
     active_ids: Arc<RwLock<Vec<DeviceId>>>,
     loopback_source: Arc<RwLock<Option<String>>>,
     running: Arc<RwLock<bool>>,
+    peak_meters: Arc<RwLock<HashMap<DeviceId, Arc<AtomicU32>>>>,
 ) {
     let mut capture: Option<Capture> = None;
     let mut workers: Vec<WorkerOutput> = Vec::new();
@@ -308,6 +437,7 @@ fn audio_thread(
     let mut planar: Vec<Vec<f32>> = Vec::new();
 
     let tick_sleep = Duration::from_millis(2);
+    let mut last_drift_tick = Instant::now();
 
     loop {
         // 1. Обработать все ожидающие команды.
@@ -328,6 +458,7 @@ fn audio_thread(
                     for w in workers.drain(..) {
                         sync.remove_device(&w.sink.device_id);
                         outputs.remove(&w.sink.device_id);
+                        peak_meters.write().remove(&w.sink.device_id);
                         // sink Drop остановит cpal::Stream.
                         drop(w);
                     }
@@ -339,12 +470,8 @@ fn audio_thread(
                     let _ = reply.send(());
                 }
                 Ok(EngineCmd::AddOutput { device_name, reply }) => {
-                    // Блокируем добавление source-устройства, чтобы не было feedback.
-                    let is_source = capture
-                        .as_ref()
-                        .map(|c| c.session.source_name == device_name)
-                        .unwrap_or(false);
-                    let res = if is_source {
+                    let src = capture.as_ref().map(|c| c.session.source_name.as_str());
+                    let res = if is_capture_source(src, &device_name) {
                         Err(ERR_FEEDBACK_LOOP.to_string())
                     } else {
                         handle_add_output(
@@ -353,6 +480,7 @@ fn audio_thread(
                             &sync,
                             &outputs,
                             &active_ids,
+                            &peak_meters,
                             &device_name,
                         )
                     };
@@ -362,6 +490,7 @@ fn audio_thread(
                     workers.retain(|w| w.sink.device_id != id);
                     sync.remove_device(&id);
                     outputs.remove(&id);
+                    peak_meters.write().remove(&id);
                     active_ids.write().retain(|x| x != &id);
                     let _ = reply.send(());
                 }
@@ -396,6 +525,32 @@ fn audio_thread(
                     };
                     let _ = reply.send(res);
                 }
+                Ok(EngineCmd::SetEq {
+                    id,
+                    low_db,
+                    mid_db,
+                    high_db,
+                    reply,
+                }) => {
+                    let res = match workers.iter_mut().find(|w| w.sink.device_id == id) {
+                        Some(w) => {
+                            w.eq.set_low_gain(low_db);
+                            w.eq.set_mid_gain(mid_db);
+                            w.eq.set_high_gain(high_db);
+                            Ok(())
+                        }
+                        None => Err(format!("device not found: {id}")),
+                    };
+                    let _ = reply.send(res);
+                }
+                Ok(EngineCmd::SetMasterGain { gain, reply }) => {
+                    outputs.master().set_gain(gain);
+                    let _ = reply.send(());
+                }
+                Ok(EngineCmd::SetMasterMuted { muted, reply }) => {
+                    outputs.master().set_muted(muted);
+                    let _ = reply.send(());
+                }
                 Ok(EngineCmd::PlayTestSignal {
                     device_name,
                     kind,
@@ -403,11 +558,8 @@ fn audio_thread(
                 }) => {
                     // Защита от feedback: тест на source = loopback вернётся
                     // в наш capture и зациклится.
-                    let is_source = capture
-                        .as_ref()
-                        .map(|c| c.session.source_name == device_name)
-                        .unwrap_or(false);
-                    let res = if is_source {
+                    let src = capture.as_ref().map(|c| c.session.source_name.as_str());
+                    let res = if is_capture_source(src, &device_name) {
                         Err(ERR_FEEDBACK_LOOP.to_string())
                     } else if test_streams.iter().any(|t| t.device_name == device_name) {
                         Err(format!("test already playing on {device_name}"))
@@ -445,8 +597,16 @@ fn audio_thread(
             if chunk_samples > 0 && available >= chunk_samples {
                 let _ = cap.consumer.pop_slice(&mut interleaved);
                 deinterleave(&interleaved, cap.session.channels as usize, &mut planar);
+                let master_gain = outputs.master().effective_gain();
                 for w in workers.iter_mut() {
-                    push_to_output(w, &interleaved, &planar, cap.session.channels as usize);
+                    push_to_output(
+                        w,
+                        &interleaved,
+                        &planar,
+                        cap.session.channels as usize,
+                        master_gain,
+                        &sync,
+                    );
                 }
             } else {
                 thread::sleep(tick_sleep);
@@ -455,7 +615,21 @@ fn audio_thread(
             thread::sleep(tick_sleep);
         }
 
-        // 3. Сборка отыгравших test-streams (Click/Sine self-terminate
+        // 3. Drift-tick (раз в DRIFT_TICK).
+        if last_drift_tick.elapsed() >= DRIFT_TICK {
+            let dt = last_drift_tick.elapsed();
+            last_drift_tick = Instant::now();
+            let errors = sync.per_device_errors();
+            if !errors.is_empty() {
+                for w in workers.iter_mut() {
+                    if let Some((_, err)) = errors.iter().find(|(id, _)| id == &w.sink.device_id) {
+                        let _ = w.drift.update(*err, dt);
+                    }
+                }
+            }
+        }
+
+        // 4. Сборка отыгравших test-streams (Click/Sine self-terminate
         // через stop_flag; Metronome — только по UI-команде Stop).
         test_streams.retain(|t| !t.is_done());
     }
@@ -483,12 +657,14 @@ fn handle_start(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_add_output(
     capture: &Option<Capture>,
     workers: &mut Vec<WorkerOutput>,
     sync: &Arc<SyncEngine>,
     outputs: &Arc<OutputManager>,
     active_ids: &Arc<RwLock<Vec<DeviceId>>>,
+    peak_meters: &Arc<RwLock<HashMap<DeviceId, Arc<AtomicU32>>>>,
     device_name: &str,
 ) -> Result<DeviceId, String> {
     let cap = capture
@@ -521,15 +697,32 @@ fn handle_add_output(
         .as_ref()
         .map(|r| r.max_output_frames)
         .unwrap_or(WORKER_CHUNK_FRAMES);
-    let interleaved_out = Vec::with_capacity(max_out_frames * sink.channels as usize);
+    // Capacity с запасом 50%: на этот буфер приходится не только
+    // ресемплированный чанк, но и временные расширения от drift-stretch
+    // и compensation-delta (вставка тишины). Без запаса они будут
+    // переаллоцировать Vec на каждом тике — это аллок в audio-потоке.
+    let interleaved_out = Vec::with_capacity(max_out_frames * sink.channels as usize * 3 / 2 + 16);
     let balance = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
+    let peak_bits = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
+    peak_meters
+        .write()
+        .insert(device_id.clone(), peak_bits.clone());
 
+    let out_sr = sink.sample_rate;
+    let out_channels = sink.channels;
+    let eq = ThreeBandEq::new(out_sr as f32);
     workers.push(WorkerOutput {
         sink,
         resampler,
         interleaved_out,
         balance,
         last_push_micros,
+        peak_bits,
+        drift: DriftCorrector::new(),
+        applied_comp_samples: 0,
+        out_sr,
+        out_channels,
+        eq,
     });
     tracing::info!(%device_id, "output added");
     Ok(device_id)
@@ -577,6 +770,8 @@ fn push_to_output(
     interleaved_src: &[f32],
     planar_src: &[Vec<f32>],
     cap_channels: usize,
+    master_gain: f32,
+    sync: &Arc<SyncEngine>,
 ) {
     let out_channels = w.sink.channels as usize;
 
@@ -622,8 +817,44 @@ fn push_to_output(
         }
     }
 
+    // EQ — между ресемплингом и balance/master, чтобы фильтрация шла на
+    // выходных частотах устройства. В bypass — no-op.
+    w.eq.process_interleaved(&mut w.interleaved_out, out_channels);
+
     // Применить balance — только для stereo. Один atomic load на чанк.
     apply_stereo_balance(&mut w.interleaved_out, out_channels, &w.balance);
+
+    // Master gain — один f32 множитель на чанк. mute уже отражён в
+    // `effective_gain` (=> 0.0 при mute).
+    if master_gain != 1.0 {
+        for s in w.interleaved_out.iter_mut() {
+            *s *= master_gain;
+        }
+    }
+
+    // Drift-correction — линейный stretch буфера через простой decimate
+    // /дублирование. Реальная коррекция ±0.1% — не слышимая. Применяем
+    // только если correction != 0.
+    let correction = w.drift.last_correction();
+    if correction.abs() > f32::EPSILON {
+        apply_drift_stretch(&mut w.interleaved_out, out_channels, correction);
+    }
+
+    // Compensation reconcile — выравнивание per-device latency к target
+    // через delay-line. Compensation_delay из SyncEngine = на сколько
+    // нам нужно отстать от реального capture-момента, чтобы все
+    // устройства попали в один wall-clock момент. Худые устройства
+    // (BT) с большой intrinsic_latency получают compensation ≈ 0;
+    // быстрые (wired) — compensation = max - intrinsic.
+    //
+    // Применение: сравниваем applied_comp_samples с target_samples,
+    // дельту распределяем по чанкам ≤ chunk_len, чтобы не давать
+    // dropouts при больших скачках слайдера.
+    apply_compensation_delta(w, sync);
+
+    // Peak — после всех gain-ов. Update before push to keep meter
+    // в синхроне с тем, что реально пошло на устройство.
+    update_peak(&w.interleaved_out, &w.peak_bits);
 
     let pushed = w.sink.producer.push_slice(&w.interleaved_out);
     if pushed < w.interleaved_out.len() {
@@ -667,6 +898,115 @@ fn apply_stereo_balance(buf: &mut [f32], channels: usize, balance: &AtomicU32) {
     }
 }
 
+/// Линейный stretch буфера по фреймам: при positive correction добавляем
+/// фреймы (растягиваем = замедляем = выход «уезжает» в будущее), при
+/// negative — выкидываем. Делаем in-place через сдвиг хвоста.
+///
+/// Это самая дешёвая компенсация дрейфа: коэффициент маленький
+/// (≤±0.1%), на 480-фреймовом чанке это <=1 фрейм за чанк, абсолютно
+/// inaudible. Корректное решение — менять rubato ratio, но
+/// `FastFixedIn` не поддерживает hot-update; делать это через
+/// `SincFixedIn::set_resample_ratio` — отдельная задача.
+fn apply_drift_stretch(buf: &mut Vec<f32>, channels: usize, correction: f32) {
+    if channels == 0 || buf.is_empty() {
+        return;
+    }
+    let frames = buf.len() / channels;
+    // delta_frames > 0 → нужно вставить (замедлить); < 0 → выбросить.
+    let delta = (frames as f32 * correction).round() as i32;
+    if delta == 0 {
+        return;
+    }
+    if delta > 0 {
+        // Дублируем последний фрейм delta раз. Cap чтобы не вылезти.
+        let n = (delta as usize).min(frames);
+        let last_start = (frames - 1) * channels;
+        for _ in 0..n {
+            for ch in 0..channels {
+                buf.push(buf[last_start + ch]);
+            }
+        }
+    } else {
+        let n = ((-delta) as usize).min(frames.saturating_sub(1));
+        let new_len = (frames - n) * channels;
+        buf.truncate(new_len);
+    }
+}
+
+/// Привести `applied_comp_samples` к таргету `compensation_delay × out_sr ×
+/// out_channels` за несколько worker-tick'ов.
+///
+/// - `delta > 0` (целевая компенсация выросла, нам надо «опоздать»
+///   сильнее) → вставляем тишину в начало текущего чанка.
+/// - `delta < 0` (компенсация уменьшилась) → выбрасываем нужное число
+///   семплов из начала чанка (они «съедаются» — устройство догоняет).
+///
+/// Размер шага cap-нут половиной `interleaved_out.len()`: при больших
+/// сдвигах latency (>10 мс единомоментно) изменение раскатывается на
+/// несколько worker-тиков, чтобы не было полной тишины или скачка.
+fn apply_compensation_delta(w: &mut WorkerOutput, sync: &Arc<SyncEngine>) {
+    let params = match sync.device_params(&w.sink.device_id) {
+        Some(p) => p,
+        None => return,
+    };
+    let target_seconds = params.compensation_delay.as_secs_f64();
+    let target_samples = (target_seconds * w.out_sr as f64 * w.out_channels as f64).round() as i64;
+    // Округляем до полного frame, чтобы не сдвигать каналы относительно
+    // друг друга при чётном out_channels.
+    let ch = w.out_channels.max(1) as i64;
+    let target_samples = target_samples - target_samples.rem_euclid(ch);
+
+    let delta = target_samples - w.applied_comp_samples;
+    if delta == 0 {
+        return;
+    }
+    let buf_len = w.interleaved_out.len() as i64;
+    if buf_len == 0 {
+        return;
+    }
+    // Cap — не больше половины чанка, чтобы оставить и аудио-данные,
+    // и место для тишины.
+    let max_step = (buf_len / 2 / ch * ch).max(ch);
+    let step = delta.clamp(-max_step, max_step);
+
+    if step > 0 {
+        // Вставить step семплов тишины в начало.
+        let n = step as usize;
+        // Сдвиг хвоста: расширяем Vec и копируем.
+        let old_len = w.interleaved_out.len();
+        w.interleaved_out.resize(old_len + n, 0.0);
+        w.interleaved_out.copy_within(0..old_len, n);
+        for s in &mut w.interleaved_out[..n] {
+            *s = 0.0;
+        }
+    } else {
+        // Съесть |step| семплов с начала.
+        let n = (-step) as usize;
+        if n >= w.interleaved_out.len() {
+            w.interleaved_out.clear();
+        } else {
+            w.interleaved_out.drain(..n);
+        }
+    }
+    w.applied_comp_samples += step;
+}
+
+/// Обновить peak-метр на основе текущего чанка. Линейный peak ∈ [0; ~2],
+/// после которого экспоненциальное затухание (см. PEAK_DECAY_PER_TICK).
+fn update_peak(buf: &[f32], peak_bits: &AtomicU32) {
+    let mut max = 0.0_f32;
+    for &s in buf {
+        let a = s.abs();
+        if a > max {
+            max = a;
+        }
+    }
+    let prev = f32::from_bits(peak_bits.load(Ordering::Relaxed));
+    let decayed = prev * PEAK_DECAY_PER_TICK;
+    let next = if max > decayed { max } else { decayed };
+    peak_bits.store(next.to_bits(), Ordering::Relaxed);
+}
+
 /// Адаптирует каналы (mono↔stereo, downmix к меньшему N) и записывает
 /// результат в `out`, переиспользуя его capacity. `out` очищается перед
 /// заполнением — без переаллокаций, если capacity достаточен.
@@ -692,5 +1032,117 @@ fn adapt_channels_into(src: &[f32], src_ch: usize, dst_ch: usize, out: &mut Vec<
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn atomic_f32(v: f32) -> AtomicU32 {
+        AtomicU32::new(v.to_bits())
+    }
+
+    #[test]
+    fn channel_adapt_stereo_to_mono_averages() {
+        let src = vec![1.0, -1.0, 0.5, 0.5];
+        let mut out = Vec::new();
+        adapt_channels_into(&src, 2, 1, &mut out);
+        assert_eq!(out, vec![0.0, 0.5]);
+    }
+
+    #[test]
+    fn channel_adapt_mono_to_stereo_duplicates() {
+        let src = vec![0.3, -0.4];
+        let mut out = Vec::new();
+        adapt_channels_into(&src, 1, 2, &mut out);
+        assert_eq!(out, vec![0.3, 0.3, -0.4, -0.4]);
+    }
+
+    #[test]
+    fn channel_adapt_same_count_passthrough() {
+        let src = vec![0.1, 0.2, 0.3, 0.4];
+        let mut out = Vec::new();
+        adapt_channels_into(&src, 2, 2, &mut out);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn balance_centre_is_no_op() {
+        let mut buf = vec![0.5, 0.5, -0.25, -0.25];
+        let bal = atomic_f32(0.0);
+        apply_stereo_balance(&mut buf, 2, &bal);
+        assert_eq!(buf, vec![0.5, 0.5, -0.25, -0.25]);
+    }
+
+    #[test]
+    fn balance_full_left_zeros_right() {
+        let mut buf = vec![1.0, 1.0];
+        let bal = atomic_f32(-1.0);
+        apply_stereo_balance(&mut buf, 2, &bal);
+        // L should be √2·1 ≈ 1.414, R should be 0.
+        assert!((buf[0] - std::f32::consts::SQRT_2).abs() < 1e-5);
+        assert!(buf[1].abs() < 1e-5);
+    }
+
+    #[test]
+    fn balance_full_right_zeros_left() {
+        let mut buf = vec![1.0, 1.0];
+        let bal = atomic_f32(1.0);
+        apply_stereo_balance(&mut buf, 2, &bal);
+        assert!(buf[0].abs() < 1e-5);
+        assert!((buf[1] - std::f32::consts::SQRT_2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn balance_skips_non_stereo() {
+        let mut buf = vec![0.5_f32; 8];
+        let bal = atomic_f32(-1.0);
+        apply_stereo_balance(&mut buf, 4, &bal);
+        // mono/4-ch — no-op.
+        assert!(buf.iter().all(|s| (*s - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn drift_stretch_zero_correction_is_noop() {
+        let mut buf = vec![0.1, 0.2, 0.3, 0.4];
+        let original = buf.clone();
+        apply_drift_stretch(&mut buf, 2, 0.0);
+        assert_eq!(buf, original);
+    }
+
+    #[test]
+    fn drift_stretch_positive_inserts_frames() {
+        // 100 frames * 2 channels, correction=0.05 → 5 extra frames.
+        let mut buf = vec![1.0; 200];
+        apply_drift_stretch(&mut buf, 2, 0.05);
+        assert_eq!(buf.len(), 210);
+    }
+
+    #[test]
+    fn drift_stretch_negative_drops_frames() {
+        let mut buf = vec![1.0; 200];
+        apply_drift_stretch(&mut buf, 2, -0.05);
+        assert_eq!(buf.len(), 190);
+    }
+
+    #[test]
+    fn peak_decays_after_silence() {
+        let peak = AtomicU32::new(0.0_f32.to_bits());
+        update_peak(&[0.8, -0.8], &peak);
+        assert!((f32::from_bits(peak.load(Ordering::Relaxed)) - 0.8).abs() < 1e-6);
+        // Тишина — должно затухнуть до prev * decay.
+        update_peak(&[0.0; 100], &peak);
+        let v = f32::from_bits(peak.load(Ordering::Relaxed));
+        assert!(v < 0.8 && v > 0.0);
+    }
+
+    #[test]
+    fn peak_holds_max() {
+        let peak = AtomicU32::new(0.0_f32.to_bits());
+        update_peak(&[0.3], &peak);
+        update_peak(&[0.9, -0.5], &peak);
+        let v = f32::from_bits(peak.load(Ordering::Relaxed));
+        assert!((v - 0.9).abs() < 1e-6);
     }
 }

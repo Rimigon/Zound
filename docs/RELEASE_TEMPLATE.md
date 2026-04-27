@@ -67,15 +67,14 @@ sudo dpkg -i Zound_X.Y.Z_amd64.deb
 
 | ОС | Статус | Что работает |
 |---|---|---|
-| Windows 10/11 | ✅ полноценно | WASAPI loopback + вывод на N устройств + микшер (mute/balance) + тест-сигнал + drift-индикатор + блокер feedback |
-| macOS 13+ | 🧪 experimental | ScreenCaptureKit loopback + полная энумерация через CoreAudio + микшер + тест-сигнал + блокер feedback |
-| Linux (PipeWire/Pulse) | 🧪 experimental | monitor-source default sink + вывод на N устройств + микшер + тест-сигнал (блокер feedback не работает — namespace ALSA vs Pulse) |
+| Windows 10/11 | ✅ полноценно | WASAPI loopback + вывод на N устройств + микшер (mute/balance/EQ/master) + тест-сигнал + drift-индикатор + адаптивная коррекция дрейфа + сессионные профили + блокер feedback |
+| macOS 13+ | 🧪 experimental | ScreenCaptureKit loopback + полная энумерация через CoreAudio + микшер + EQ + тест-сигнал + блокер feedback |
+| Linux (PipeWire/Pulse) | 🧪 experimental | monitor-source default sink + вывод на N устройств + микшер + EQ + тест-сигнал (блокер feedback не работает — namespace ALSA vs Pulse) |
 
 ## Известные ограничения
 
 - «Двоение» звука — by design loopback-подхода.
-- Latency калибруется на слух.
-- Тест-сигнал ещё не встроен.
+- Latency пока калибруется на слух (chirp-API уже есть, авто-pipeline — следующий релиз).
 
 ## Баги
 

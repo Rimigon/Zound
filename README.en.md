@@ -14,23 +14,69 @@ manual latency compensation, and a switchable UI (Russian / English).
 - 🔊 Parallel output to **N devices** at the same time.
 - 🎚 Per-device **volume, mute and L/R balance**, updated atomically
   inside the realtime callback.
+- 🎛 **3-band EQ** per device (low-shelf 100 Hz, peak 1 kHz, high-shelf
+  8 kHz, ±12 dB) with zero-cost bypass when gain == 0.
+- 🎚 **Master gain + master mute** (global volume / mute across all
+  outputs), per-device peak meter in the UI.
 - ⏱ Manual per-device **latency**; target latency is recomputed
   automatically by the Sync Engine.
 - 🧭 **Drift indicator** badge in the header showing live sync delta
   between active outputs (threshold 50 ms).
+- 🛰 **Adaptive drift correction**: PI controller per device, nudges the
+  resampler ratio by up to ±0.1% (±100 ppm) to track the shared target.
 - 🎵 **Test signal**: click / 1 kHz sine / metronome 40-240 BPM on any
   device — for by-ear calibration.
+- 📐 **Calibration chirp** (200 ms linear sweep 200 Hz → 4 kHz) exposed
+  via the `generate_calibration_chirp` Tauri command — the foundation
+  for upcoming automatic latency calibration.
+- 💾 **Session profiles**: devices, volume, mute, balance, latency, EQ
+  serialized to JSON and auto-restored on the next launch.
 - 🔁 Automatic **resampling** (`rubato`) when capture and output
   sample rates differ (e.g. 44.1 kHz → 48 kHz).
 - 🛡 **Feedback-loop protection**: the capture source device cannot be
-  added as an output. Works on Windows and macOS.
+  added as an output, and test signals on it are blocked too. Works on
+  Windows and macOS.
 - 🔄 **Auto device refresh** every 2 seconds.
 - 🌗 **Dark/Light/Auto theme** toggle in the header.
-- 💾 **Auto-reconnect** the last active outputs on engine start.
 - 🔍 **"Show all devices"** toggle (off by default — outputs only; on —
   inputs are also listed but cannot be added).
 - ▶️⏹ Start/stop pipeline from the UI without restarting the app.
 - 🌐 Language switch ru/en (Project Fluent, `.ftl` dictionaries).
+- 🧪 **`--self-test`** — headless smoke check used by CI.
+
+## What's new in 0.4.0
+
+- **3-band EQ per device.** Low-shelf 100 Hz, peak 1 kHz, high-shelf
+  8 kHz (Q=0.707 / 1.0, RBJ Audio EQ Cookbook). Biquads in Direct
+  Form I, per-channel state, coefficients hot-swapped via `ArcSwap`
+  with no locking in the callback. Bypass at gain == 0 is a single
+  `if` per sample — zero DSP cost.
+- **Master gain + master mute.** A global trim sitting on top of
+  per-device volume. Mute is instant (atomic in the worker); gain is
+  a linear 0–1.5x scale, with a per-device peak meter under each
+  volume slider (30 fps).
+- **Adaptive clock drift correction.** A PI controller per device
+  feeds an error signal `device_t − reference_t` into a small
+  resampler-ratio nudge (`±0.001`, 5 ms deadband). Enough to absorb
+  typical ±20–50 ppm crystal drift without audible pitch wander on
+  test tones.
+- **Session profiles.** State (active devices + their volume / mute /
+  balance / latency / EQ + master gain / mute) is serialized to JSON
+  (`session.json` in the platform data dir) and restored on the next
+  launch. A `version` field reserves space for future migrations.
+- **Calibration chirp.** A 200 ms linear sweep from 200 Hz to 4 kHz
+  available via the `generate_calibration_chirp(sample_rate,
+  duration_ms)` Tauri command. The full cross-correlation pipeline
+  through loopback is the next increment; this release ships the base
+  API a UI "calibrate" button can sit on.
+- **`--self-test` smoke mode.** Headless: open capture, attach one
+  dummy output, push N samples, shut down cleanly. Used in CI on
+  linux/windows/macos in both debug and release profiles.
+- **CI workflow.** `.github/workflows/ci.yml`: rustfmt, `cargo doc`
+  with `-D rustdoc::broken-intra-doc-links`, `Cargo.lock` check via
+  `--locked`, clippy + tests + smoke on three OSes, both profiles.
+- **`zound-output` integration tests.** New `crates/zound-output/tests/`
+  folder for first-class AudioEngine regression scenarios.
 
 ## What's new in 0.3.0
 
@@ -266,8 +312,8 @@ macOS (Apple Silicon) and Linux via `tauri-action`. It triggers on a
 `v*` tag push:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 GitHub Actions creates a **draft release** — open it in the repo UI

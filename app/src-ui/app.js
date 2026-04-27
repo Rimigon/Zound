@@ -14,13 +14,26 @@ const state = {
   testRunning: new Map(), // device_name → { kind, bpm? }
   activePopover: null, // открытый test-popover (DOM-элемент) или null
   suspendPersist: false, // true пока идёт restoreSession (race-guard)
+  master: { gain: 1.0, muted: false },
+  peakBars: new Map(), // device_id → DOM .peak-fill
+  latencyLinked: false, // если true, движение одного latency-слайдера двигает все
+  // device_id → { low, mid, high } gain в dB. Не сохраняется в session (UI-only),
+  // отправляется в backend через set_output_eq.
+  eq: new Map(),
+  // device_id → group name (string). UI-only, хранится в localStorage.
+  deviceGroups: new Map(),
 };
 
 const SHOW_ALL_KEY = "zound.showAllDevices";
 const THEME_KEY = "zound.theme";
-const SESSION_KEY = "zound.lastSession.outputs";
+const LATENCY_LINK_KEY = "zound.latencyLinked";
+const GROUPS_KEY = "zound.deviceGroups";
+const EQ_KEY = "zound.deviceEq";
+const SESSION_KEY = "zound.lastSession.outputs"; // legacy — мигрируем в backend profile
+const PROFILE_PERSIST_DEBOUNCE_MS = 250;
 
 const DEVICE_REFRESH_INTERVAL_MS = 2000;
+const PEAK_REFRESH_INTERVAL_MS = 80;
 
 // ------------- i18n -------------
 
@@ -59,6 +72,7 @@ function applyTranslations() {
   renderDevices();
   renderActives();
   refreshTargetLatency();
+  refreshDefaultSourceWarning();
 }
 
 function refreshEngineButton() {
@@ -169,7 +183,9 @@ function renderDevices() {
       <button class="test-btn icon-btn" data-i18n-title="test-button-title">🔊</button>
       <button class="action-btn"></button>
     `;
-    row.querySelector(".name").textContent = d.name;
+    const nameEl = row.querySelector(".name");
+    nameEl.textContent = d.name;
+    nameEl.title = d.name;
 
     const meta = row.querySelector(".meta");
     meta.textContent = `${d.sample_rate} Hz · ${d.channels} ch${d.is_default ? " · default" : ""}`;
@@ -238,6 +254,7 @@ function balanceLabel(b) {
 function renderActives() {
   const root = document.getElementById("active-outputs");
   root.innerHTML = "";
+  state.peakBars.clear();
   if (state.active.length === 0) {
     const empty = document.createElement("p");
     empty.className = "hint";
@@ -249,6 +266,8 @@ function renderActives() {
   note.className = "hint note";
   note.textContent = t("doubling-note");
   root.appendChild(note);
+
+  renderGroupsPanel(root);
 
   for (const a of state.active) {
     const isStereo = (a.channels ?? 2) === 2;
@@ -282,9 +301,12 @@ function renderActives() {
           <span class="value"></span>
         </div>
       </div>
-      <button></button>
+      <button class="device-reset-btn icon-btn" title="" aria-label="reset">⟲</button>
     `;
-    row.querySelector(".name").textContent = a.name;
+    const nameEl = row.querySelector(".name");
+    nameEl.textContent = a.name;
+    nameEl.title = a.name;
+    nameEl.appendChild(buildGroupPill(a));
     row.querySelector('label[data-row="volume"]').textContent = t("volume-label");
     row.querySelector('label[data-row="latency"]').textContent = t("latency-label");
     const balLabel = row.querySelector('label[data-row="balance"]');
@@ -314,14 +336,18 @@ function renderActives() {
     });
     latEl.addEventListener("input", (e) => {
       const ms = parseInt(e.target.value, 10);
-      a.latency_ms = ms;
-      latV.textContent = `${ms} ms`;
-      invoke("set_output_latency", { id: a.id, latencyMs: ms })
-        .then(() => {
-          refreshTargetLatency();
-          persistSession();
-        })
-        .catch((err) => setStatus(String(err), "err"));
+      if (state.latencyLinked) {
+        applyLinkedLatency(ms);
+      } else {
+        a.latency_ms = ms;
+        latV.textContent = `${ms} ms`;
+        invoke("set_output_latency", { id: a.id, latencyMs: ms })
+          .then(() => {
+            refreshTargetLatency();
+            persistSession();
+          })
+          .catch((err) => setStatus(String(err), "err"));
+      }
     });
     balEl.addEventListener("input", (e) => {
       const b = parseInt(e.target.value, 10) / 100;
@@ -338,23 +364,358 @@ function renderActives() {
         .catch((err) => setStatus(String(err), "err"));
     });
 
-    const rm = row.querySelector("button");
-    rm.textContent = t("device-remove");
-    rm.addEventListener("click", () => removeOutput(a.id));
+    // Peak-meter row
+    const peakRow = document.createElement("div");
+    peakRow.className = "peak-row";
+    peakRow.innerHTML = `
+      <span class="peak-label"></span>
+      <div class="peak-bar"><div class="peak-fill"></div></div>
+    `;
+    peakRow.querySelector(".peak-label").textContent = t("peak-label");
+    row.querySelector(".sliders").appendChild(peakRow);
+    state.peakBars.set(a.id, peakRow.querySelector(".peak-fill"));
+
+    // EQ row
+    row.querySelector(".sliders").appendChild(buildEqRow(a));
+
+    const reset = row.querySelector("button.device-reset-btn");
+    reset.title = t("device-reset-title");
+    reset.setAttribute("aria-label", t("device-reset"));
+    reset.addEventListener("click", () => resetDevice(a));
     root.appendChild(row);
   }
 }
 
+async function resetDevice(a) {
+  const defaults = {
+    volume: 1.0,
+    latency_ms: 20,
+    balance: 0,
+    muted: false,
+  };
+  a.volume = defaults.volume;
+  a.latency_ms = defaults.latency_ms;
+  a.balance = defaults.balance;
+  a.muted = defaults.muted;
+  state.eq.set(a.id, { low: 0, mid: 0, high: 0 });
+  try {
+    await Promise.all([
+      invoke("set_output_volume", { id: a.id, volume: defaults.volume }),
+      invoke("set_output_latency", {
+        id: a.id,
+        latencyMs: defaults.latency_ms,
+      }),
+      invoke("set_output_balance", { id: a.id, balance: defaults.balance }),
+      invoke("set_output_muted", { id: a.id, muted: defaults.muted }),
+      invoke("set_output_eq", { id: a.id, lowDb: 0, midDb: 0, highDb: 0 }),
+    ]);
+  } catch (e) {
+    setStatus(String(e), "err");
+  }
+  persistDeviceEq();
+  persistSession();
+  refreshTargetLatency();
+  renderActives();
+}
+
+// ------------- groups + EQ helpers -------------
+
+function loadDeviceGroups() {
+  try {
+    const raw = localStorage.getItem(GROUPS_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object") {
+      state.deviceGroups = new Map(Object.entries(obj));
+    }
+  } catch (_) {}
+}
+
+function persistDeviceGroups() {
+  const obj = Object.fromEntries(state.deviceGroups.entries());
+  try {
+    localStorage.setItem(GROUPS_KEY, JSON.stringify(obj));
+  } catch (_) {}
+}
+
+function loadDeviceEq() {
+  try {
+    const raw = localStorage.getItem(EQ_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object") {
+      for (const [id, v] of Object.entries(obj)) {
+        if (v && typeof v === "object") state.eq.set(id, {
+          low: +v.low || 0, mid: +v.mid || 0, high: +v.high || 0,
+        });
+      }
+    }
+  } catch (_) {}
+}
+
+function persistDeviceEq() {
+  const obj = Object.fromEntries(state.eq.entries());
+  try {
+    localStorage.setItem(EQ_KEY, JSON.stringify(obj));
+  } catch (_) {}
+}
+
+function getDeviceEq(id) {
+  let e = state.eq.get(id);
+  if (!e) {
+    e = { low: 0, mid: 0, high: 0 };
+    state.eq.set(id, e);
+  }
+  return e;
+}
+
+function pushEqToBackend(a) {
+  const e = getDeviceEq(a.id);
+  invoke("set_output_eq", {
+    id: a.id,
+    lowDb: e.low,
+    midDb: e.mid,
+    highDb: e.high,
+  }).catch((err) => setStatus(String(err), "err"));
+}
+
+function uniqueGroups() {
+  const set = new Set();
+  for (const a of state.active) {
+    const g = state.deviceGroups.get(a.id);
+    if (g) set.add(g);
+  }
+  return [...set].sort();
+}
+
+function buildGroupPill(a) {
+  const wrap = document.createElement("span");
+  wrap.className = "group-pill";
+  const sel = document.createElement("select");
+  const cur = state.deviceGroups.get(a.id) || "";
+  const options = [["", t("group-none")]];
+  for (const g of uniqueGroups()) options.push([g, g]);
+  options.push(["__new__", t("group-new")]);
+  for (const [val, label] of options) {
+    const opt = document.createElement("option");
+    opt.value = val;
+    opt.textContent = label;
+    if (val === cur) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener("change", (e) => {
+    let v = e.target.value;
+    if (v === "__new__") {
+      const name = (window.prompt(t("group-new-prompt"), "") || "").trim();
+      if (!name) {
+        e.target.value = cur;
+        return;
+      }
+      v = name;
+    }
+    if (v) state.deviceGroups.set(a.id, v);
+    else state.deviceGroups.delete(a.id);
+    persistDeviceGroups();
+    renderActives();
+  });
+  const label = document.createElement("span");
+  label.textContent = t("group-label") + ":";
+  wrap.appendChild(label);
+  wrap.appendChild(sel);
+  return wrap;
+}
+
+function renderGroupsPanel(root) {
+  const groups = uniqueGroups();
+  if (groups.length === 0) return;
+  const panel = document.createElement("div");
+  panel.className = "groups-panel";
+  for (const name of groups) {
+    const members = state.active.filter(
+      (a) => state.deviceGroups.get(a.id) === name,
+    );
+    if (members.length === 0) continue;
+    const avgVol = members.reduce((s, a) => s + a.volume, 0) / members.length;
+    const avgLat =
+      members.reduce((s, a) => s + a.latency_ms, 0) / members.length;
+    const allMuted = members.every((a) => a.muted);
+
+    const row = document.createElement("div");
+    row.className = "group-row";
+    row.innerHTML = `
+      <div class="name"></div>
+      <input type="range" min="0" max="100" value="${Math.round(avgVol * 100)}" data-kind="g-vol" />
+      <input type="range" min="0" max="500" value="${Math.round(avgLat)}" data-kind="g-lat" />
+      <button class="group-mute"></button>
+    `;
+    row.querySelector(".name").textContent = `${name} (${members.length})`;
+    const muteBtn = row.querySelector("button.group-mute");
+    muteBtn.textContent = allMuted ? t("unmute-button") : t("group-mute");
+    muteBtn.title = t("group-mute");
+
+    row.querySelector('input[data-kind="g-vol"]').addEventListener(
+      "input",
+      (e) => {
+        const v = parseInt(e.target.value, 10) / 100;
+        for (const a of members) {
+          a.volume = v;
+          invoke("set_output_volume", { id: a.id, volume: v }).catch(() => {});
+        }
+        renderActives();
+        persistSession();
+      },
+    );
+    row.querySelector('input[data-kind="g-lat"]').addEventListener(
+      "input",
+      (e) => {
+        const ms = parseInt(e.target.value, 10);
+        for (const a of members) {
+          a.latency_ms = ms;
+          invoke("set_output_latency", { id: a.id, latencyMs: ms }).catch(() => {});
+        }
+        renderActives();
+        refreshTargetLatency();
+        persistSession();
+      },
+    );
+    muteBtn.addEventListener("click", () => {
+      const next = !allMuted;
+      for (const a of members) {
+        a.muted = next;
+        invoke("set_output_muted", { id: a.id, muted: next }).catch(() => {});
+      }
+      renderActives();
+      persistSession();
+    });
+    panel.appendChild(row);
+  }
+  if (panel.children.length > 0) root.appendChild(panel);
+}
+
+function buildEqRow(a) {
+  const eq = getDeviceEq(a.id);
+  const row = document.createElement("div");
+  row.className = "eq-row";
+  row.innerHTML = `
+    <span class="eq-label"></span>
+    <div class="eq-band" data-band="low">
+      <span class="eq-band-name"></span>
+      <input type="range" min="-12" max="12" step="0.5" />
+      <span class="eq-band-value"></span>
+    </div>
+    <div class="eq-band" data-band="mid">
+      <span class="eq-band-name"></span>
+      <input type="range" min="-12" max="12" step="0.5" />
+      <span class="eq-band-value"></span>
+    </div>
+    <div class="eq-band" data-band="high">
+      <span class="eq-band-name"></span>
+      <input type="range" min="-12" max="12" step="0.5" />
+      <span class="eq-band-value"></span>
+    </div>
+    <button class="eq-reset"></button>
+  `;
+  row.querySelector(".eq-label").textContent = t("eq-toggle");
+  const setBand = (band, key) => {
+    const div = row.querySelector(`[data-band="${band}"]`);
+    div.querySelector(".eq-band-name").textContent = t(key);
+    const input = div.querySelector("input");
+    const value = div.querySelector(".eq-band-value");
+    input.value = String(eq[band]);
+    value.textContent = `${eq[band] > 0 ? "+" : ""}${eq[band].toFixed(1)} dB`;
+    input.addEventListener("input", (e) => {
+      const v = parseFloat(e.target.value);
+      eq[band] = v;
+      value.textContent = `${v > 0 ? "+" : ""}${v.toFixed(1)} dB`;
+      pushEqToBackend(a);
+      persistDeviceEq();
+    });
+  };
+  setBand("low", "eq-low");
+  setBand("mid", "eq-mid");
+  setBand("high", "eq-high");
+  const reset = row.querySelector(".eq-reset");
+  reset.textContent = t("eq-reset");
+  reset.addEventListener("click", () => {
+    eq.low = 0; eq.mid = 0; eq.high = 0;
+    pushEqToBackend(a);
+    persistDeviceEq();
+    renderActives();
+  });
+  return row;
+}
+
+// Применить одну и ту же задержку ко всем активным устройствам
+// (UI-режим «связать задержки»). Обновляет state, DOM и backend одним
+// вызовом set_all_latencies — это атомарно с точки зрения SyncEngine
+// (один пересчёт target_latency).
+function applyLinkedLatency(ms) {
+  for (const a of state.active) {
+    a.latency_ms = ms;
+  }
+  // Обновляем все слайдеры/значения в DOM, не трогая фокус.
+  document
+    .querySelectorAll('#active-outputs input[data-kind="latency"]')
+    .forEach((el) => {
+      if (parseInt(el.value, 10) !== ms) el.value = String(ms);
+    });
+  document
+    .querySelectorAll('#active-outputs [data-row="latency-v"]')
+    .forEach((el) => {
+      el.textContent = `${ms} ms`;
+    });
+  invoke("set_all_latencies", { latencyMs: ms })
+    .then(() => {
+      refreshTargetLatency();
+      persistSession();
+    })
+    .catch((err) => setStatus(String(err), "err"));
+}
+
+async function refreshPeaks() {
+  if (!state.engineRunning || state.active.length === 0) return;
+  let snap;
+  try {
+    snap = await invoke("peaks");
+  } catch (_) {
+    return;
+  }
+  for (const { id, peak } of snap) {
+    const fill = state.peakBars.get(id);
+    if (!fill) continue;
+    const pct = Math.min(100, Math.round(peak * 100));
+    fill.style.width = pct + "%";
+  }
+}
+
+function refreshDefaultSourceWarning() {
+  const el = document.getElementById("default-source-warning");
+  if (!el) return;
+  if (state.engineRunning && state.loopbackSource) {
+    el.textContent = tFmt("default-source-warning", {
+      source: state.loopbackSource,
+    });
+    el.classList.remove("hidden");
+  } else {
+    el.classList.add("hidden");
+    el.textContent = "";
+  }
+}
+
 async function refreshTargetLatency() {
-  if (!state.engineRunning) return;
+  const el = document.getElementById("target-latency");
+  if (!state.engineRunning || state.active.length === 0) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    return;
+  }
   try {
     const ms = await invoke("target_latency_ms");
-    document.getElementById("target-latency").textContent = tFmt(
-      "sync-target-latency",
-      { ms },
-    );
+    el.textContent = tFmt("sync-target-latency", { ms });
+    el.classList.remove("hidden");
   } catch (_) {
-    // engine не запущен — игнорируем
+    el.classList.add("hidden");
+    el.textContent = "";
   }
 }
 
@@ -498,29 +859,89 @@ async function stopAllTests() {
   state.testRunning.clear();
 }
 
+// ------------- master controls -------------
+
+async function loadMasterState() {
+  try {
+    const m = await invoke("master_state");
+    state.master.gain = m.gain;
+    state.master.muted = m.muted;
+  } catch (_) {
+    state.master = { gain: 1.0, muted: false };
+  }
+  applyMasterUI();
+}
+
+function applyMasterUI() {
+  const range = document.getElementById("master-gain");
+  const mute = document.getElementById("master-mute");
+  const value = document.getElementById("master-gain-value");
+  if (!range || !mute || !value) return;
+  range.value = String(Math.round(state.master.gain * 100));
+  mute.checked = state.master.muted;
+  value.textContent = `${Math.round(state.master.gain * 100)}%`;
+}
+
 // ------------- session persist / restore -------------
+//
+// Раньше сессия лежала в localStorage; в v0.4 переехала в backend
+// (session.json в app data dir). localStorage используется как fallback
+// при первом запуске после миграции — читаем legacy-payload, сохраняем
+// в backend, очищаем localStorage.
+
+let persistTimer = null;
+
+function buildProfile() {
+  return {
+    devices: state.active.map((a) => ({
+      name: a.name,
+      volume: a.volume,
+      latency_ms: a.latency_ms,
+      balance: a.balance ?? 0,
+      muted: !!a.muted,
+    })),
+    master_gain: state.master.gain,
+    master_muted: state.master.muted,
+  };
+}
 
 function persistSession() {
   if (state.suspendPersist) return;
-  const payload = state.active.map((a) => ({
-    name: a.name,
-    volume: a.volume,
-    latency_ms: a.latency_ms,
-    balance: a.balance ?? 0,
-    muted: !!a.muted,
-  }));
-  try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
-  } catch (_) {
-    // ignore (private mode etc.)
-  }
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(async () => {
+    persistTimer = null;
+    const profile = buildProfile();
+    try {
+      await invoke("save_session_profile", profile);
+    } catch (e) {
+      console.warn("session save failed", e);
+    }
+  }, PROFILE_PERSIST_DEBOUNCE_MS);
 }
 
-function loadSession() {
+async function loadSession() {
+  // 1. Backend-профайл (новый путь).
+  try {
+    const profile = await invoke("load_session_profile");
+    if (profile && Array.isArray(profile.devices)) {
+      state.master.gain = profile.master_gain ?? 1.0;
+      state.master.muted = !!profile.master_muted;
+      applyMasterUI();
+      // Применить master до restore — устройства сразу заиграют с нужным
+      // gain.
+      try { await invoke("set_master_gain", { gain: state.master.gain }); } catch (_) {}
+      try { await invoke("set_master_muted", { muted: state.master.muted }); } catch (_) {}
+      return profile.devices.filter((d) => d && typeof d.name === "string");
+    }
+  } catch (e) {
+    console.warn("load_session_profile failed", e);
+  }
+  // 2. Legacy: localStorage. Если есть — мигрируем и удаляем.
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
+    localStorage.removeItem(SESSION_KEY);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((d) => d && typeof d.name === "string");
   } catch (_) {
@@ -530,7 +951,7 @@ function loadSession() {
 }
 
 async function restoreSession() {
-  const saved = loadSession();
+  const saved = await loadSession();
   if (saved.length === 0) return;
   state.suspendPersist = true;
   const failures = [];
@@ -570,6 +991,18 @@ async function restoreSession() {
       if (newActive.muted) {
         try {
           await invoke("set_output_muted", { id, muted: true });
+        } catch (_) {}
+      }
+      // Push EQ если он сохранён в localStorage для этого id.
+      const eq = state.eq.get(id);
+      if (eq && (eq.low || eq.mid || eq.high)) {
+        try {
+          await invoke("set_output_eq", {
+            id,
+            lowDb: eq.low,
+            midDb: eq.mid,
+            highDb: eq.high,
+          });
         } catch (_) {}
       }
     } catch (e) {
@@ -656,6 +1089,7 @@ async function startEngine(options = {}) {
     state.loopbackSource = status.loopback_source;
     refreshEngineButton();
     renderDevices();
+    refreshDefaultSourceWarning();
     setStatus(t("status-engine-started"), "ok");
     if (!skipRestore && state.active.length === 0) {
       await restoreSession();
@@ -679,6 +1113,7 @@ async function stopEngine() {
     renderDevices();
     renderActives();
     refreshTargetLatency();
+    refreshDefaultSourceWarning();
     setStatus(t("status-engine-stopped"), "ok");
   } catch (e) {
     setStatus(String(e), "err");
@@ -715,6 +1150,44 @@ async function init() {
       }
     });
 
+  // Latency link toggle. UI-only state (не пишем в profile — это
+  // pref интерфейса, не часть аудио-сессии).
+  const linkEl = document.getElementById("latency-link");
+  state.latencyLinked = localStorage.getItem(LATENCY_LINK_KEY) === "1";
+  linkEl.checked = state.latencyLinked;
+  linkEl.addEventListener("change", (e) => {
+    state.latencyLinked = e.target.checked;
+    localStorage.setItem(LATENCY_LINK_KEY, state.latencyLinked ? "1" : "0");
+    if (state.latencyLinked && state.active.length > 0) {
+      // При включении сразу выравниваем по максимуму — иначе цель
+      // компенсации скакнёт неожиданно.
+      const target = state.active.reduce(
+        (m, a) => Math.max(m, a.latency_ms || 0),
+        0,
+      );
+      applyLinkedLatency(target);
+    }
+  });
+
+  // Master controls
+  const masterGain = document.getElementById("master-gain");
+  const masterMute = document.getElementById("master-mute");
+  const masterValue = document.getElementById("master-gain-value");
+  masterGain.addEventListener("input", (e) => {
+    const g = parseInt(e.target.value, 10) / 100;
+    state.master.gain = g;
+    masterValue.textContent = `${e.target.value}%`;
+    invoke("set_master_gain", { gain: g })
+      .then(persistSession)
+      .catch((err) => setStatus(String(err), "err"));
+  });
+  masterMute.addEventListener("change", (e) => {
+    state.master.muted = e.target.checked;
+    invoke("set_master_muted", { muted: state.master.muted })
+      .then(persistSession)
+      .catch((err) => setStatus(String(err), "err"));
+  });
+
   // Тоггл «показать все устройства»
   const showAll = document.getElementById("show-all-devices");
   state.showAllDevices = localStorage.getItem(SHOW_ALL_KEY) === "1";
@@ -738,6 +1211,8 @@ async function init() {
     if (e.key === "Escape") closePopover();
   });
 
+  loadDeviceGroups();
+  loadDeviceEq();
   await loadDictionary(state.lang);
   // Считываем текущее состояние движка — на случай hot reload.
   try {
@@ -748,6 +1223,7 @@ async function init() {
     // no-op
   }
 
+  await loadMasterState();
   applyTranslations();
   await refreshDevices({ silent: true });
   renderActives();
@@ -765,6 +1241,9 @@ async function init() {
     await refreshDevices({ silent: true });
     await refreshSyncStatus();
   }, DEVICE_REFRESH_INTERVAL_MS);
+
+  // Peak meters — отдельный быстрый interval (~12 fps).
+  setInterval(refreshPeaks, PEAK_REFRESH_INTERVAL_MS);
 }
 
 document.addEventListener("DOMContentLoaded", init);

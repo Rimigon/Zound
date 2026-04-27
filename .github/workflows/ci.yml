@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  lockfile:
+    name: Cargo.lock matches manifests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libpulse-dev libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      # `--locked` падает, если Cargo.lock рассинхронизирован с
+      # Cargo.toml (новая зависимость / другая версия).
+      - run: cargo check --workspace --locked
+
+  docs:
+    name: cargo doc
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libasound2-dev libpulse-dev libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - name: cargo doc (no deps)
+        env:
+          RUSTDOCFLAGS: "-D rustdoc::broken-intra-doc-links -D warnings"
+        run: cargo doc --workspace --no-deps --document-private-items
+
+  clippy-and-test:
+    name: clippy + test (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            label: linux
+          - platform: windows-latest
+            label: windows
+          - platform: macos-latest
+            label: macos
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libpulse-dev \
+            libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          shared-key: ci-${{ matrix.label }}
+
+      # Strict clippy: -D warnings уже в RUSTFLAGS.
+      - name: clippy (debug, all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Тот же clippy на release-профиле — иначе LTO/codegen-настройки
+      # могут вскрыть warning, которого не было в debug.
+      - name: clippy (release, all targets)
+        run: cargo clippy --workspace --all-targets --release -- -D warnings
+
+      - name: test (debug)
+        run: cargo test --workspace --no-fail-fast
+
+      # Release tests — оптимизированный код может вести себя иначе
+      # (особенно DSP с FastFixedIn / биквадами).
+      - name: test (release)
+        run: cargo test --workspace --no-fail-fast --release
+
+      - name: smoke (--self-test)
+        run: cargo run -p app -- --self-test
+
+      - name: smoke (--self-test, release)
+        run: cargo run -p app --release -- --self-test

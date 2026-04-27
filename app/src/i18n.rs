@@ -70,6 +70,28 @@ const KEYS: &[&str] = &[
     "status-restore-ok",
     "status-restore-failed-one",
     "status-restore-partial",
+    // v0.4 — master + peak meters + linked latencies.
+    "master-label",
+    "master-mute",
+    "peak-label",
+    "latency-link-label",
+    "latency-link-title",
+    "default-source-warning",
+    // v0.5 — EQ, groups, sparkline.
+    "eq-toggle",
+    "eq-low",
+    "eq-mid",
+    "eq-high",
+    "eq-reset",
+    "device-reset",
+    "device-reset-title",
+    "group-label",
+    "group-none",
+    "group-new",
+    "group-new-prompt",
+    "group-volume",
+    "group-mute",
+    "group-latency",
 ];
 
 type Bundle = FluentBundle<FluentResource>;

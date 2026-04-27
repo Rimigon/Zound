@@ -81,3 +81,32 @@ sync-status-na = —
 status-restore-ok = Session restored
 status-restore-failed-one = Not found: { $name }
 status-restore-partial = { $count } devices not restored
+
+# v0.4 — master gain/mute, peak meters
+master-label = Master volume
+master-mute = Master mute
+peak-label = Level
+latency-link-label = Link latencies
+latency-link-title = Move all latency sliders together
+default-source-warning =
+    The capture source ({ $source }) is the Windows default device. It is
+    played directly by the system, bypassing Zound, so its latency cannot
+    be tuned. To synchronise all devices, change the default in Windows
+    Sound Settings to a placeholder (or a virtual cable) and add the
+    targets as Zound outputs.
+
+# v0.5 — EQ, groups, drift sparkline
+eq-toggle = Equalizer
+eq-low = Low
+eq-mid = Mid
+eq-high = High
+eq-reset = Reset
+device-reset = Reset device
+device-reset-title = Restore volume, latency, balance, mute and EQ to defaults
+group-label = Group
+group-none = No group
+group-new = New…
+group-new-prompt = New group name:
+group-volume = Group volume
+group-mute = Mute
+group-latency = Group latency
