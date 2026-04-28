@@ -29,8 +29,10 @@ fn main() {
 /// build.rs.
 fn emit_macos_swift_rpath() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        // У `app` нет test-target → cargo отвергает `link-arg-tests`,
+        // поэтому только `-bins`. Тесты, которым нужен Swift-рантайм,
+        // живут в `zound-output` — у него отдельный build.rs.
         println!("cargo:rustc-link-arg-bins=-Wl,-rpath,/usr/lib/swift");
-        println!("cargo:rustc-link-arg-tests=-Wl,-rpath,/usr/lib/swift");
     }
 }
 
