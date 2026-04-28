@@ -70,6 +70,36 @@ jobs:
 
             ---
 
+            ## Что нового в 0.4.1
+
+            ### Аудио-ядро — баги и устойчивость
+            - **Стабильный backend-id для устройств.** WASAPI endpoint id (Windows, через `IMMDeviceEnumerator`) и AudioObjectID (macOS) сохраняются в `DeviceInfo.endpoint_id`. Session profile теперь матчит устройства по id с fallback на имя — пресет переживает переименование устройства в системе.
+            - **Watchdog отключения устройства.** 200 worker-тиков подряд с >50% потерь push → engine выкидывает `OutputDisconnected`-event, фронт убирает плашку устройства автоматически.
+            - **Подписка на смену системного default (Windows).** Поллер `GetDefaultAudioEndpoint`: при смене дефолта делается soft-restart capture, во фронте показывается баннер.
+            - **`catch_unwind` вокруг audio-thread.** Panic в audio-callback больше не валит процесс; `engine_status.alive=false`, UI показывает «engine died» вместо тишины.
+            - **Drift correction без drop/dup кадров.** Через `rubato::set_resample_ratio_relative` — pitch не плывёт при компенсации; на устройствах без ресемплера — fallback на линейный stretch.
+            - **Per-thread `CoInitializeEx` (Windows).** Watcher-thread дёргал COM на неинициализированном апартаменте; на release-сборке тесты падали с STATUS_ACCESS_VIOLATION ~1 из 5 запусков. Каждый поток теперь инициализирует свой apartment сам — 15/15 release-прогонов зелёные.
+
+            ### UI и команды
+            - **Fire-and-forget Tauri-команды.** Volume / mute / balance / EQ / master не ждут channel-reply — UI отзывчив на каждое движение слайдера, ошибки device-not-found ловятся в audio-thread и пишутся в `tracing::warn!`.
+            - **EQ в session profile.** Low / mid / high (dB) сериализуется и восстанавливается между запусками.
+            - **`CommandError` enum с `#[serde(tag="kind")]`.** Фронт matches по полю — парсинг строк ушёл, ошибки локализуются предсказуемо.
+            - **DTO-консолидация.** `DevicePreset` и `ProfileDeviceDto` слиты в один тип с `serde(rename_all="camelCase")`.
+
+            ### Структурные правки
+            - **i18n паритет на этапе сборки.** `app/build.rs` парсит `locales/{ru,en}.ftl`, генерирует `KEYS` в `OUT_DIR` — расхождение ru↔en роняет компиляцию, не дотягивается до релиза.
+            - **Frontend разбит на ES-модули.** `state` / `ipc` / `i18n` / `theme` / `status` / `devices` / `mixer` / `sync` / `tests` / `session` / `events` — `app.js` ужался с 1.2k LOC до тонкого роутера.
+            - **Tauri capabilities ужесточены.** Только `core:default` + окно `main`, никаких `fs` / `http` / `shell` / `dialog`.
+            - **Content Security Policy.** `default-src 'self'`, `no-eval`, `no-inline-scripts` в `tauri.conf.json`.
+            - **`DriftCorrector` kp/ki.** Расчёт-обоснование коэффициентов + step-response unit-тест с проверкой монотонной раскачки и cap-а коррекции.
+            - **Rate-limited drop-warning.** Накопленные dropped-семплы логируются раз в секунду на устройство, не флудят stderr.
+
+            ### CI
+            - **3 платформы под полным тестом.** `clippy --all-targets -- -D warnings` (debug + release), `cargo test --workspace --no-fail-fast` (debug + release), smoke `--self-test` на Windows / macOS / Linux. Lockfile-check, `cargo doc` с `-D rustdoc::broken-intra-doc-links`, fmt-check.
+            - **macOS Swift-рантайм rpath.** `screencapturekit-rs` линкует Swift-биндинги без rpath; на macos-runners `libswift_Concurrency.dylib` не находился в dyld cache → SIGABRT в тестах. `build.rs` крейтов `zound-output` и `app` теперь эмитит `-Wl,-rpath,/usr/lib/swift` для линкуемых артефактов.
+
+            ---
+
             ## Что в этой сборке
 
             - 🎧 WASAPI loopback — захват системного аудио на Windows.
