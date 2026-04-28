@@ -15,7 +15,23 @@ use std::path::Path;
 fn main() {
     ensure_placeholder_icons();
     generate_i18n_keys();
+    emit_macos_swift_rpath();
     tauri_build::build();
+}
+
+/// macOS: транзитивная зависимость screencapturekit-rs (через
+/// zound-platform) линкует Swift-биндинги, но не добавляет rpath к
+/// Swift runtime. На GitHub Actions macos-latest libswift_Concurrency.dylib
+/// не находится в dyld cache → SIGABRT ещё до main(). /usr/lib/swift —
+/// стандартное место Swift-рантайма на macOS 12+. `cargo:rustc-link-arg`
+/// независим от RUSTFLAGS env var (которая в CI содержит `-D warnings`
+/// и переопределила бы `.cargo/config.toml`), поэтому фикс делается в
+/// build.rs.
+fn emit_macos_swift_rpath() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,/usr/lib/swift");
+        println!("cargo:rustc-link-arg-tests=-Wl,-rpath,/usr/lib/swift");
+    }
 }
 
 /// Парсит .ftl-файлы и пишет в `OUT_DIR/i18n_keys.rs`:
