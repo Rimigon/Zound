@@ -31,12 +31,29 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
 };
 
-/// Идемпотентный CoInitializeEx. `RPC_E_CHANGED_MODE` означает «уже
-/// инициализировано в другом режиме» — это нормально, мы продолжаем.
+/// Идемпотентный CoInitializeEx **per-thread**. COM-апартаменты в Windows
+/// привязаны к потоку: каждый поток, который дёргает COM, обязан сам
+/// вызвать `CoInitializeEx`. Если этого не сделать — поведение
+/// неопределённое, в release собранный таск-харнес тестов выпадал в
+/// `STATUS_ACCESS_VIOLATION` на выходе процесса (когда watcher-thread
+/// держал COM-объекты, инициализированные на другом потоке).
+///
+/// `RPC_E_CHANGED_MODE` («уже инициализировано в другом режиме») и
+/// `S_FALSE` (повторный init на том же потоке) — нормальные коды,
+/// игнорируем. `CoUninitialize` намеренно не вызывается: в среднем
+/// случае поток с COM живёт до конца процесса, а ранний uninit ломает
+/// объекты, которые ещё могут быть в живых Drop-цепочках.
 fn ensure_com_initialized() {
-    static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    INIT.get_or_init(|| unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    thread_local! {
+        static INIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    INIT.with(|cell| {
+        if !cell.get() {
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
+            cell.set(true);
+        }
     });
 }
 
