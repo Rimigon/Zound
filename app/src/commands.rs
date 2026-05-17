@@ -403,12 +403,82 @@ pub fn save_session_profile(
         .read()
         .clone()
         .ok_or_else(|| CommandError::backend("session path not initialized"))?;
+    // Алиасы фронт не присылает: они живут собственным путём через
+    // `set_device_alias` / `list_device_aliases`. Сохраняем то, что лежит
+    // в файле, чтобы save_session_profile не стирал их.
+    let device_aliases = SessionProfile::load_from(&path)
+        .ok()
+        .flatten()
+        .map(|p| p.device_aliases)
+        .unwrap_or_default();
     let profile = SessionProfile {
         version: zound_output::profile::PROFILE_VERSION,
         devices,
         master_gain,
         master_muted,
+        device_aliases,
     };
+    profile.save_to(&path).map_err(CommandError::backend)
+}
+
+// ---------- device aliases ---------- //
+//
+// Алиас — это пользовательское имя устройства «только в приложении». Системное
+// имя WASAPI/CoreAudio/PipeWire не трогается; алиас живёт в session.json в
+// `device_aliases: { endpoint_id → имя }`. Алгоритм матча устройства при
+// restore-сессии по-прежнему идёт по `endpoint_id` (см. profile.rs) — алиас
+// просто рендерится поверх системного имени.
+
+const DEVICE_ALIAS_MAX_LEN: usize = 80;
+
+#[tauri::command]
+pub fn list_device_aliases(state: State<'_, AppState>) -> HashMap<String, String> {
+    let path = match state.session_path.read().clone() {
+        Some(p) => p,
+        None => return HashMap::new(),
+    };
+    match SessionProfile::load_from(&path) {
+        Ok(Some(p)) => p.device_aliases.into_iter().collect(),
+        Ok(None) => HashMap::new(),
+        Err(e) => {
+            tracing::warn!(?e, "device aliases load failed");
+            HashMap::new()
+        }
+    }
+}
+
+#[tauri::command]
+pub fn set_device_alias(
+    state: State<'_, AppState>,
+    endpoint_id: String,
+    alias: Option<String>,
+) -> CmdResult<()> {
+    if endpoint_id.trim().is_empty() {
+        return Err(CommandError::bad_request("empty endpoint_id"));
+    }
+    let path = state
+        .session_path
+        .read()
+        .clone()
+        .ok_or_else(|| CommandError::backend("session path not initialized"))?;
+
+    let mut profile = SessionProfile::load_from(&path)
+        .map_err(CommandError::backend)?
+        .unwrap_or_default();
+
+    let trimmed = alias.as_deref().map(str::trim).unwrap_or("");
+    if trimmed.is_empty() {
+        profile.device_aliases.remove(&endpoint_id);
+    } else {
+        if trimmed.chars().count() > DEVICE_ALIAS_MAX_LEN {
+            return Err(CommandError::bad_request(format!(
+                "alias too long (max {DEVICE_ALIAS_MAX_LEN} chars)"
+            )));
+        }
+        profile
+            .device_aliases
+            .insert(endpoint_id, trimmed.to_string());
+    }
     profile.save_to(&path).map_err(CommandError::backend)
 }
 

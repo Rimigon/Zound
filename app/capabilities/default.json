@@ -1,11 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Минимальный набор разрешений для UI Zound: только core:default (event, window, webview, app, resources, menu, tray). Никаких fs/http/shell/dialog плагинов мы не подключаем — UI чисто статичный, общается с backend-ом через invoke зарегистрированных команд (см. main.rs::generate_handler!).",
+  "description": "core:default + минимально необходимые разрешения tauri-plugin-updater (check / download / install) и tauri-plugin-process (relaunch после установки апдейта). Никаких fs/http/shell/dialog плагинов; UI продолжает общаться с backend-ом через invoke зарегистрированных команд (см. main.rs::generate_handler!).",
   "windows": [
     "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

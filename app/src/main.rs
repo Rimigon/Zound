@@ -80,6 +80,8 @@ fn run_tauri() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(state)
         .setup(move |app| {
             // Path resolver доступен только после Tauri-setup. Сохраняем
@@ -123,6 +125,8 @@ fn run_tauri() {
             commands::peaks,
             commands::load_session_profile,
             commands::save_session_profile,
+            commands::list_device_aliases,
+            commands::set_device_alias,
             commands::generate_calibration_chirp,
         ])
         .run(tauri::generate_context!())

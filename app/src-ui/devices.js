@@ -8,6 +8,8 @@ import { openTestPopover, formatTestRunning, stopTest } from "./tests.js";
 import { renderActives } from "./mixer.js";
 import { refreshTargetLatency } from "./sync.js";
 import { persistSession } from "./session.js";
+import { displayName } from "./aliases.js";
+import { openDeviceContextMenu } from "./device-menu.js";
 
 function devicesEqual(a, b) {
   if (a.length !== b.length) return false;
@@ -72,8 +74,9 @@ export function renderDevices() {
       <button class="action-btn"></button>
     `;
     const nameEl = row.querySelector(".name");
-    nameEl.textContent = d.name;
-    nameEl.title = d.name;
+    const shown = displayName(d);
+    nameEl.textContent = shown;
+    nameEl.title = shown === d.name ? d.name : `${shown}\n(${d.name})`;
 
     const meta = row.querySelector(".meta");
     meta.textContent = `${d.sampleRate} Hz · ${d.channels} ch${
@@ -131,6 +134,16 @@ export function renderDevices() {
       btn.textContent = t("device-add");
       btn.addEventListener("click", () => addOutput(d.name, d.endpointId));
     }
+
+    // ПКМ → контекстное меню переименования. Только для устройств со
+    // стабильным endpointId — без него алиас не к чему привязать.
+    if (d.endpointId) {
+      row.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        openDeviceContextMenu(ev.clientX, ev.clientY, d);
+      });
+    }
+
     root.appendChild(row);
   }
 }

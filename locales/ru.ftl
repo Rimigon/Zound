@@ -111,3 +111,21 @@ group-new-prompt = Имя новой группы:
 group-volume = Громкость группы
 group-mute = Без звука
 group-latency = Задержка группы
+
+# v0.4.2 — алиасы устройств + автообновление
+device-rename = Переименовать
+device-rename-reset = Сбросить имя
+device-rename-prompt-title = Имя в приложении
+device-rename-prompt-hint = Системное имя устройства не изменится
+device-rename-prompt-label = Новое имя
+device-rename-ok = OK
+device-rename-cancel = Отмена
+device-rename-saved = Имя сохранено
+device-rename-cleared = Имя сброшено
+update-available = Доступна новая версия { $version }
+update-install = Установить и перезапустить
+update-later = Позже
+update-downloading = Загрузка: { $percent } %
+update-installing = Установка…
+update-failed = Не удалось обновить
+

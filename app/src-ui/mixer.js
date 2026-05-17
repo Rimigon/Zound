@@ -7,6 +7,8 @@ import { t, tFmt } from "./i18n.js";
 import { setStatus } from "./status.js";
 import { applyLinkedLatency, refreshTargetLatency } from "./sync.js";
 import { persistSession } from "./session.js";
+import { displayName } from "./aliases.js";
+import { openDeviceContextMenu } from "./device-menu.js";
 
 function balanceLabel(b) {
   if (Math.abs(b) < 0.025) return t("balance-c");
@@ -301,9 +303,20 @@ export function renderActives() {
       <button class="device-reset-btn icon-btn" title="" aria-label="reset">⟲</button>
     `;
     const nameEl = row.querySelector(".name");
-    nameEl.textContent = a.name;
-    nameEl.title = a.name;
+    const shown = displayName(a);
+    nameEl.textContent = shown;
+    nameEl.title = shown === a.name ? a.name : `${shown}\n(${a.name})`;
     nameEl.appendChild(buildGroupPill(a));
+
+    if (a.endpointId) {
+      row.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        openDeviceContextMenu(ev.clientX, ev.clientY, {
+          name: a.name,
+          endpointId: a.endpointId,
+        });
+      });
+    }
     row.querySelector('label[data-row="volume"]').textContent = t("volume-label");
     row.querySelector('label[data-row="latency"]').textContent = t("latency-label");
     const balLabel = row.querySelector('label[data-row="balance"]');

@@ -19,9 +19,18 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://github.com https://*.githubusercontent.com https://api.github.com; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'"
     },
     "withGlobalTauri": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Rimigon/Zound/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgxQ0QzN0VGOENBOUZDRjgKUldUNC9LbU03emZOZ2NubzJEOC80akpMalBmNm5XR2JjUzFwU2h5SngzbEI5Q20vUm5DN1Y1dEQK",
+      "dialog": false
+    }
   },
   "bundle": {
     "active": true,

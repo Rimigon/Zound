@@ -31,6 +31,8 @@ import {
 } from "./tests.js";
 import { restoreSession, persistSession } from "./session.js";
 import { pollEngineEvents, pollEngineStatus } from "./events.js";
+import { loadAliases } from "./aliases.js";
+import { startUpdateChecker } from "./updater.js";
 
 function refreshEngineButton() {
   const btn = document.getElementById("engine-toggle");
@@ -162,6 +164,7 @@ async function init() {
   });
 
   await loadDictionary(state.lang);
+  await loadAliases();
   await pollEngineStatus();
   await loadMasterState();
   applyMasterUI();
@@ -188,6 +191,8 @@ async function init() {
     () => pollEngineEvents(renderDevices, renderActives),
     INTERVALS.eventsPollMs,
   );
+
+  startUpdateChecker();
 }
 
 document.addEventListener("DOMContentLoaded", init);

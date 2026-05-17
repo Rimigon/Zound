@@ -28,6 +28,13 @@ export const state = {
   /// источник правды (через session.json), здесь — для рендера слайдеров.
   eq: new Map(),
   deviceGroups: new Map(),
+  /// endpointId → пользовательский алиас. Чисто display, системное имя
+  /// устройства не меняется. Источник правды — session.json через команды
+  /// `list_device_aliases` / `set_device_alias`.
+  aliases: new Map(),
+  /// Доступное обновление: { version, body } | null. Источник — Tauri
+  /// updater plugin (см. updater.js).
+  updateAvailable: null,
 };
 
 export const KEYS = {
@@ -37,6 +44,9 @@ export const KEYS = {
   groups: "zound.deviceGroups",
   eq: "zound.deviceEq",
   legacySession: "zound.lastSession.outputs",
+  /// Версия апдейта, который пользователь скрыл кнопкой «Позже». Плашка
+  /// не показывается, пока updater не обнаружит более новую версию.
+  updateDismissedVersion: "zound.update.dismissedVersion",
 };
 
 export const INTERVALS = {

@@ -11,6 +11,7 @@
 //! пока всегда 1; новые поля добавляются с `#[serde(default)]`, поэтому
 //! старые профили читаются без миграции.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -88,6 +89,11 @@ pub struct SessionProfile {
     pub master_gain: f32,
     #[serde(default)]
     pub master_muted: bool,
+    /// Алиасы устройств: endpoint_id → пользовательское имя. Применяются
+    /// только при отображении в UI; системное имя устройства не меняется.
+    /// Поле опциональное — старые профили без алиасов читаются как есть.
+    #[serde(default)]
+    pub device_aliases: BTreeMap<String, String>,
 }
 
 fn default_master_gain() -> f32 {
@@ -101,6 +107,7 @@ impl Default for SessionProfile {
             devices: Vec::new(),
             master_gain: default_master_gain(),
             master_muted: false,
+            device_aliases: BTreeMap::new(),
         }
     }
 }
@@ -191,6 +198,25 @@ mod tests {
         assert_eq!(p.devices[0].eq_low_db, 0.0);
         assert!(p.devices[0].endpoint_id.is_none());
         assert_eq!(p.master_gain, 1.0);
+    }
+
+    #[test]
+    fn device_aliases_roundtrip_and_default() {
+        // Старый профиль без deviceAliases читается с пустой картой.
+        let s = r#"{"version":1,"devices":[]}"#;
+        let p: SessionProfile = serde_json::from_str(s).unwrap();
+        assert!(p.device_aliases.is_empty());
+
+        // Roundtrip с алиасами.
+        let mut p = SessionProfile::default();
+        p.device_aliases
+            .insert("wasapi:{abc}".into(), "Колонки на кухне".into());
+        p.device_aliases
+            .insert("coreaudio:42".into(), "AirPods".into());
+        let s = serde_json::to_string(&p).unwrap();
+        assert!(s.contains("\"deviceAliases\""));
+        let back: SessionProfile = serde_json::from_str(&s).unwrap();
+        assert_eq!(p, back);
     }
 
     #[test]

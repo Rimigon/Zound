@@ -110,3 +110,21 @@ group-new-prompt = New group name:
 group-volume = Group volume
 group-mute = Mute
 group-latency = Group latency
+
+# v0.4.2 — device aliases + auto-update
+device-rename = Rename
+device-rename-reset = Reset name
+device-rename-prompt-title = Name in app
+device-rename-prompt-hint = The system device name will not change
+device-rename-prompt-label = New name
+device-rename-ok = OK
+device-rename-cancel = Cancel
+device-rename-saved = Name saved
+device-rename-cleared = Name reset
+update-available = New version { $version } available
+update-install = Install and restart
+update-later = Later
+update-downloading = Downloading: { $percent } %
+update-installing = Installing…
+update-failed = Update failed
+

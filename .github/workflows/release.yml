@@ -58,6 +58,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Подпись updater-артефактов (отдельно от code signing). Пара
+          # ключей сгенерирована `tauri signer generate`; публичный — в
+          # tauri.conf.json (plugins.updater.pubkey). При наличии этих
+          # переменных tauri-action подписывает каждый bundle (.sig) и
+          # генерирует latest.json — его и читает tauri-plugin-updater.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: app
           tagName: ${{ github.ref_name }}
