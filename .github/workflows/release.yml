@@ -77,33 +77,24 @@ jobs:
 
             ---
 
-            ## Что нового в 0.4.1
+            ## Что нового в 0.4.2
 
-            ### Аудио-ядро — баги и устойчивость
-            - **Стабильный backend-id для устройств.** WASAPI endpoint id (Windows, через `IMMDeviceEnumerator`) и AudioObjectID (macOS) сохраняются в `DeviceInfo.endpoint_id`. Session profile теперь матчит устройства по id с fallback на имя — пресет переживает переименование устройства в системе.
-            - **Watchdog отключения устройства.** 200 worker-тиков подряд с >50% потерь push → engine выкидывает `OutputDisconnected`-event, фронт убирает плашку устройства автоматически.
-            - **Подписка на смену системного default (Windows).** Поллер `GetDefaultAudioEndpoint`: при смене дефолта делается soft-restart capture, во фронте показывается баннер.
-            - **`catch_unwind` вокруг audio-thread.** Panic в audio-callback больше не валит процесс; `engine_status.alive=false`, UI показывает «engine died» вместо тишины.
-            - **Drift correction без drop/dup кадров.** Через `rubato::set_resample_ratio_relative` — pitch не плывёт при компенсации; на устройствах без ресемплера — fallback на линейный stretch.
-            - **Per-thread `CoInitializeEx` (Windows).** Watcher-thread дёргал COM на неинициализированном апартаменте; на release-сборке тесты падали с STATUS_ACCESS_VIOLATION ~1 из 5 запусков. Каждый поток теперь инициализирует свой apartment сам — 15/15 release-прогонов зелёные.
+            ### Переименование устройств в приложении
+            - **ПКМ-меню на строке устройства.** Контекстное меню «Переименовать» / «Сбросить имя» открывается и в списке устройств, и в активном миксере. Inline-prompt показывает системное имя как placeholder и подсказку, что оно не изменится.
+            - **Display-only алиас.** Пользовательское имя влияет только на отображение. В backend-команды (`add_output`, `play_test_signal`, и т.д.) уходит оригинальное системное имя — никакая привязка устройства не ломается.
+            - **Стабильное хранение по `endpoint_id`.** Алиасы лежат в `session.json` под полем `deviceAliases` (`BTreeMap<endpoint_id, имя>`); поле опциональное, старые профили читаются как есть. `save_session_profile` сохраняет существующие алиасы, чтобы изменения громкости/латентности их не затирали.
+            - **Новые Tauri-команды.** `set_device_alias` (trim, лимит 80 символов, пустая строка ⇒ сброс) и `list_device_aliases` — оба возвращают структурированные ошибки через тот же `CommandError`-enum.
+            - **i18n.** 9 новых ключей (`device-rename*`) добавлены в `ru.ftl` и `en.ftl`; парность по-прежнему проверяется на этапе сборки через `build.rs`.
 
-            ### UI и команды
-            - **Fire-and-forget Tauri-команды.** Volume / mute / balance / EQ / master не ждут channel-reply — UI отзывчив на каждое движение слайдера, ошибки device-not-found ловятся в audio-thread и пишутся в `tracing::warn!`.
-            - **EQ в session profile.** Low / mid / high (dB) сериализуется и восстанавливается между запусками.
-            - **`CommandError` enum с `#[serde(tag="kind")]`.** Фронт matches по полю — парсинг строк ушёл, ошибки локализуются предсказуемо.
-            - **DTO-консолидация.** `DevicePreset` и `ProfileDeviceDto` слиты в один тип с `serde(rename_all="camelCase")`.
+            ### Авто-обновление через `tauri-plugin-updater`
+            - **Плашка обновления вместо ручного скачивания.** Через 5 с после старта приложение опрашивает `latest.json` на GitHub Releases. Если есть новая версия — сверху появляется баннер «Доступна версия X» с кнопками «Установить и перезапустить» и «Позже». Кнопка «Позже» запоминает версию в `localStorage` и не всплывает, пока не выйдет ещё более новая.
+            - **Прогресс и перезапуск.** Прогресс загрузки и стадия установки видны прямо в баннере; после установки `tauri-plugin-process::relaunch` перезапускает приложение.
+            - **Подписанные артефакты + minisign.** Updater качает bundle строго той платформы и проверяет подпись публичным ключом из `tauri.conf.json` перед установкой. Подпись делается отдельной парой ключей через `tauri signer generate`; код-сайнинг (Authenticode / Gatekeeper) ортогонален и не требуется.
+            - **CI пробрасывает секреты.** `tauri-action` подписывает каждый bundle и генерирует `latest.json`, если в репозитории заданы `TAURI_SIGNING_PRIVATE_KEY` и `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+            - **CSP/capabilities — минимальное расширение.** `connect-src` дополнен `https://github.com`, `https://api.github.com`, `https://*.githubusercontent.com`. Capabilities: `updater:default` + `process:allow-restart`. По-прежнему ни одного `fs/http/shell/dialog` плагина.
 
-            ### Структурные правки
-            - **i18n паритет на этапе сборки.** `app/build.rs` парсит `locales/{ru,en}.ftl`, генерирует `KEYS` в `OUT_DIR` — расхождение ru↔en роняет компиляцию, не дотягивается до релиза.
-            - **Frontend разбит на ES-модули.** `state` / `ipc` / `i18n` / `theme` / `status` / `devices` / `mixer` / `sync` / `tests` / `session` / `events` — `app.js` ужался с 1.2k LOC до тонкого роутера.
-            - **Tauri capabilities ужесточены.** Только `core:default` + окно `main`, никаких `fs` / `http` / `shell` / `dialog`.
-            - **Content Security Policy.** `default-src 'self'`, `no-eval`, `no-inline-scripts` в `tauri.conf.json`.
-            - **`DriftCorrector` kp/ki.** Расчёт-обоснование коэффициентов + step-response unit-тест с проверкой монотонной раскачки и cap-а коррекции.
-            - **Rate-limited drop-warning.** Накопленные dropped-семплы логируются раз в секунду на устройство, не флудят stderr.
-
-            ### CI
-            - **3 платформы под полным тестом.** `clippy --all-targets -- -D warnings` (debug + release), `cargo test --workspace --no-fail-fast` (debug + release), smoke `--self-test` на Windows / macOS / Linux. Lockfile-check, `cargo doc` с `-D rustdoc::broken-intra-doc-links`, fmt-check.
-            - **macOS Swift-рантайм rpath.** `screencapturekit-rs` линкует Swift-биндинги без rpath; на macos-runners `libswift_Concurrency.dylib` не находился в dyld cache → SIGABRT в тестах. `build.rs` крейтов `zound-output` и `app` теперь эмитит `-Wl,-rpath,/usr/lib/swift` для линкуемых артефактов.
+            ### Прочее
+            - **Версия в `app/tauri.conf.json` и `Cargo.toml` подтянута до 0.4.2.**
 
             ---
 
@@ -134,7 +125,7 @@ jobs:
 
             Или заранее через PowerShell:
             ```powershell
-            Unblock-File -Path .\Zound_0.2.0_x64_en-US.msi
+            Unblock-File -Path .\Zound_0.4.2_x64_en-US.msi
             ```
 
             ### 🍎 macOS — Gatekeeper
@@ -147,12 +138,12 @@ jobs:
             ### 🐧 Linux
             AppImage:
             ```bash
-            chmod +x Zound_0.2.0_amd64.AppImage
-            ./Zound_0.2.0_amd64.AppImage
+            chmod +x Zound_0.4.2_amd64.AppImage
+            ./Zound_0.4.2_amd64.AppImage
             ```
             `.deb`:
             ```bash
-            sudo dpkg -i Zound_0.2.0_amd64.deb
+            sudo dpkg -i Zound_0.4.2_amd64.deb
             ```
 
             ## Статус платформ

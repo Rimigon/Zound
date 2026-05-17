@@ -44,6 +44,28 @@ manual latency compensation, and a switchable UI (Russian / English).
 - 🌐 Language switch ru/en (Project Fluent, `.ftl` dictionaries).
 - 🧪 **`--self-test`** — headless smoke check used by CI.
 
+## What's new in 0.4.2
+
+- **In-app device rename.** Right-click on a device row (in the list or
+  the active mixer) → "Rename" / "Reset name". The alias is display only:
+  the system WASAPI / CoreAudio / PipeWire name is left untouched, and
+  `add_output` / `play_test_signal` still use the original. Stored in
+  `session.json` under `deviceAliases: { endpoint_id → name }`, so it
+  survives restarts and works for any visible device, active or not.
+- **Auto-update via `tauri-plugin-updater`.** Five seconds after start
+  (and every 6 hours afterwards) the app polls a `latest.json` manifest
+  on GitHub Releases. When a newer version is available a banner appears
+  at the top — "Install and restart" downloads + installs + relaunches.
+  "Later" hides the banner until an even newer version ships
+  (persisted in `localStorage`). Bundle artifacts are signed with a
+  separate minisign-format key pair; `latest.json` is produced by
+  `tauri-action` in CI when `TAURI_SIGNING_PRIVATE_KEY{,_PASSWORD}`
+  secrets are set.
+- **CSP widened** to include `github.com` / `api.github.com` /
+  `*.githubusercontent.com` (for manifest fetch and bundle download),
+  and capabilities gained `updater:default` + `process:allow-restart`.
+  Still no `fs/http/shell/dialog` plugins.
+
 ## What's new in 0.4.1
 
 Project audit closed 15 items (P1 bugs + P2 structural improvements) in
