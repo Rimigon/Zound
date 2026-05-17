@@ -60,7 +60,7 @@ status-output-removed = Устройство убрано
 status-devices-refreshed = Список устройств обновлён
 
 # v0.3.0 — микшер, тест-сигнал, тема, drift, auto-reconnect.
-theme-toggle-title = Сменить тему
+theme-toggle-title = Выбрать тему
 mute-label = Без звука
 balance-l = Л
 balance-c = Ц
@@ -128,4 +128,17 @@ update-later = Позже
 update-downloading = Загрузка: { $percent } %
 update-installing = Установка…
 update-failed = Не удалось обновить
+
+# v0.4.3 — расширенный набор тем + auto-режим в отдельной настройке
+theme-pick-title = Тема оформления
+theme-auto-label = Следить за системой
+theme-auto-hint = Палитра подстраивается под светлый/тёмный режим ОС
+theme-name-dark = Тёмная
+theme-name-light = Светлая
+theme-name-midnight = Полночь
+theme-name-sunset = Закат
+theme-name-forest = Лес
+theme-name-ocean = Океан
+theme-name-mono = Контраст
+
 

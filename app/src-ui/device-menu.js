@@ -13,12 +13,16 @@ import { setAlias, clearAlias, hasAlias } from "./aliases.js";
 /// чтобы не тянуть mixer/devices при загрузке модуля и снова не словить
 /// цикл.
 async function rerenderAfterAliasChange() {
-  const [{ renderDevices }, { renderActives }] = await Promise.all([
-    import("./devices.js"),
-    import("./mixer.js"),
-  ]);
+  const [{ renderDevices }, { renderActives }, { refreshDefaultSourceWarning }] =
+    await Promise.all([
+      import("./devices.js"),
+      import("./mixer.js"),
+      import("./sync.js"),
+    ]);
   renderDevices();
   renderActives();
+  // Warning у источника захвата теперь показывает алиас в скобках.
+  refreshDefaultSourceWarning();
 }
 
 export function openDeviceContextMenu(x, y, d) {

@@ -59,7 +59,7 @@ status-output-removed = Output removed
 status-devices-refreshed = Device list refreshed
 
 # v0.3.0 — mixer, test signal, theme, drift, auto-reconnect.
-theme-toggle-title = Toggle theme
+theme-toggle-title = Choose theme
 mute-label = Mute
 balance-l = L
 balance-c = C
@@ -127,4 +127,17 @@ update-later = Later
 update-downloading = Downloading: { $percent } %
 update-installing = Installing…
 update-failed = Update failed
+
+# v0.4.3 — expanded theme set + auto mode as a separate setting
+theme-pick-title = Theme
+theme-auto-label = Follow system
+theme-auto-hint = Palette switches with the OS light/dark setting
+theme-name-dark = Dark
+theme-name-light = Light
+theme-name-midnight = Midnight
+theme-name-sunset = Sunset
+theme-name-forest = Forest
+theme-name-ocean = Ocean
+theme-name-mono = Contrast
+
 

@@ -6,12 +6,15 @@
     <title>Zound</title>
     <script>
       // Применяем тему до первого кадра — иначе светлая тема мигает
-      // через тёмную при загрузке. Stylesheet ниже использует
-      // `:root[data-theme="light"]` override.
+      // через тёмную при загрузке. Если включён auto-режим, атрибут не
+      // ставим вообще — палитра придёт через prefers-color-scheme в CSS.
       (function () {
         try {
+          var auto = localStorage.getItem("zound.themeAuto") === "1";
+          if (auto) return;
           var t = localStorage.getItem("zound.theme");
-          if (t === "light" || t === "dark") {
+          var valid = ["dark", "light", "midnight", "sunset", "forest", "ocean", "mono"];
+          if (valid.indexOf(t) !== -1) {
             document.documentElement.dataset.theme = t;
           }
         } catch (_) {}
@@ -42,7 +45,7 @@
           <option value="ru" data-i18n="language-ru">Русский</option>
           <option value="en" data-i18n="language-en">English</option>
         </select>
-        <button id="theme-toggle" class="icon-btn" data-i18n-title="theme-toggle-title" aria-label="Toggle theme">🌓</button>
+        <button id="theme-toggle" class="icon-btn" data-i18n-title="theme-toggle-title" aria-label="Theme picker">🎨</button>
         <button id="engine-toggle" class="primary" data-i18n="engine-start">Запустить</button>
       </div>
     </header>

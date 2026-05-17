@@ -22,6 +22,17 @@ export function hasAlias(endpointId) {
   return !!endpointId && state.aliases.has(endpointId);
 }
 
+/// Текстовая метка устройства, известного только по имени (например,
+/// `state.loopbackSource`). Если у устройства из `state.devices` есть
+/// алиас — возвращает «<алиас> (<системное имя>)». Иначе — системное имя.
+export function labelForDeviceName(name) {
+  if (!name) return "";
+  const dev = state.devices.find((d) => d.name === name);
+  if (!dev || !dev.endpointId) return name;
+  const alias = state.aliases.get(dev.endpointId);
+  return alias ? `${alias} (${name})` : name;
+}
+
 export async function loadAliases() {
   try {
     const map = await invoke("list_device_aliases");

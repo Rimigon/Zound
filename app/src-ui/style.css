@@ -1,4 +1,10 @@
-:root {
+/* Палитра по умолчанию (dark) — применяется, когда атрибут
+   data-theme не задан или явно "dark". Каждая тема ниже переопределяет
+   те же 11 переменных. Шкала: bg → panel → panel-2 → border, text →
+   muted, accent → accent-2 (градиент для primary-кнопок), плюс
+   ok/warn/err для статусов и пиков. --radius общий. */
+:root,
+:root[data-theme="dark"] {
   --bg: #0f1117;
   --panel: #181b24;
   --panel-2: #1f2330;
@@ -25,6 +31,104 @@
   --ok: #2ea060;
   --warn: #c8881d;
   --err: #c8412f;
+}
+
+/* Глубокий фиолетово-синий вечер. Акцент почти неоновый, фон
+   почти чёрный. */
+:root[data-theme="midnight"] {
+  --bg: #0a0d1f;
+  --panel: #121632;
+  --panel-2: #1a1f42;
+  --border: #2d3461;
+  --text: #e4e6ff;
+  --muted: #8088b8;
+  --accent: #8b6dff;
+  --accent-2: #ff6dc7;
+  --ok: #5fd5ff;
+  --warn: #ffc857;
+  --err: #ff5e8a;
+}
+
+/* Светлая тёплая, персиково-кремовая. Низкий контраст текста, чтобы
+   не утомлять при длительной работе днём. */
+:root[data-theme="sunset"] {
+  --bg: #fff5ed;
+  --panel: #ffffff;
+  --panel-2: #ffe7d4;
+  --border: #f3c8a8;
+  --text: #3d1f0f;
+  --muted: #8a6450;
+  --accent: #e8542e;
+  --accent-2: #c9418c;
+  --ok: #2f7a4e;
+  --warn: #b56409;
+  --err: #b8312a;
+}
+
+/* Тёмная лесная. Холодный зелёный фон + тёплый горчичный акцент. */
+:root[data-theme="forest"] {
+  --bg: #0f1814;
+  --panel: #16241c;
+  --panel-2: #1d3027;
+  --border: #2e4a3b;
+  --text: #d8e8d8;
+  --muted: #88a591;
+  --accent: #5ec97c;
+  --accent-2: #c9a85e;
+  --ok: #7be36b;
+  --warn: #e8b552;
+  --err: #e87a5e;
+}
+
+/* Тёмная морская: бирюза + мятный градиент. */
+:root[data-theme="ocean"] {
+  --bg: #07151a;
+  --panel: #0e2530;
+  --panel-2: #15333f;
+  --border: #2a566a;
+  --text: #d6ecf3;
+  --muted: #6f95a4;
+  --accent: #3fc6e0;
+  --accent-2: #4fe0c8;
+  --ok: #4fe0a4;
+  --warn: #f0c860;
+  --err: #f06672;
+}
+
+/* Контрастная чёрно-белая. Для скриншотов, доступности и стресс-теста
+   палитры (любой компонент должен оставаться читаемым). */
+:root[data-theme="mono"] {
+  --bg: #000000;
+  --panel: #0a0a0a;
+  --panel-2: #161616;
+  --border: #3a3a3a;
+  --text: #f5f5f5;
+  --muted: #9a9a9a;
+  --accent: #ffffff;
+  --accent-2: #c0c0c0;
+  --ok: #c8e6c9;
+  --warn: #ffe082;
+  --err: #ffab91;
+}
+
+/* Auto-режим. Когда пользователь включил «следить за системой», фронт
+   снимает атрибут data-theme — и здесь по prefers-color-scheme мы
+   подменяем палитру на light, если ОС светлая. Базовый блок выше уже
+   даёт dark — это fallback для тёмной системы. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg: #f5f6fa;
+    --panel: #ffffff;
+    --panel-2: #eef0f6;
+    --border: #d8dce6;
+    --text: #1a1d28;
+    --muted: #6b7184;
+    --accent: #6b4ee0;
+    --accent-2: #d24a8c;
+    --ok: #2ea060;
+    --warn: #c8881d;
+    --err: #c8412f;
+  }
 }
 
 * {
@@ -307,9 +411,10 @@ h2 {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
-  /* Изоляция: изменения внутри одной строки не пересчитывают layout
-     соседних. Дополнительно убирает 1px-jitter при repaint. */
-  contain: layout paint;
+  /* Изоляция layout: изменения внутри одной строки не пересчитывают
+     layout соседних. `paint`-containment нельзя — он клиппит попап
+     тест-сигнала, который позиционирован абсолютно под строкой. */
+  contain: layout;
 }
 
 .device-row .info,
@@ -1017,4 +1122,135 @@ h2 {
 
 .update-banner button.primary {
   font-weight: 600;
+}
+
+/* Theme picker — попап с сеткой свотчей + auto-чекбоксом. */
+
+.theme-picker {
+  position: fixed;
+  z-index: 100;
+  min-width: 260px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+}
+
+.theme-picker .title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.theme-swatch {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: transparent;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.12s, transform 0.06s;
+}
+
+.theme-swatch:hover {
+  border-color: var(--accent);
+}
+
+.theme-swatch:active {
+  transform: scale(0.97);
+}
+
+.theme-swatch.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.theme-swatch[disabled] {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.theme-swatch .preview {
+  display: flex;
+  height: 28px;
+  border-radius: 5px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.theme-swatch .preview span {
+  flex: 1;
+}
+
+.theme-swatch .label {
+  font-size: 11px;
+  color: var(--text);
+  text-align: center;
+  font-weight: 500;
+}
+
+/* Hardcoded preview colors per theme — не вытащить из vars без
+   применения data-theme к самому свотчу, поэтому повторяем 3-цветный
+   градиент каждой темы здесь. */
+.theme-swatch[data-theme-name="dark"] .preview span:nth-child(1) { background: #0f1117; }
+.theme-swatch[data-theme-name="dark"] .preview span:nth-child(2) { background: #1f2330; }
+.theme-swatch[data-theme-name="dark"] .preview span:nth-child(3) { background: #6aa8ff; }
+
+.theme-swatch[data-theme-name="light"] .preview span:nth-child(1) { background: #f5f6fa; }
+.theme-swatch[data-theme-name="light"] .preview span:nth-child(2) { background: #eef0f6; }
+.theme-swatch[data-theme-name="light"] .preview span:nth-child(3) { background: #6b4ee0; }
+
+.theme-swatch[data-theme-name="midnight"] .preview span:nth-child(1) { background: #0a0d1f; }
+.theme-swatch[data-theme-name="midnight"] .preview span:nth-child(2) { background: #1a1f42; }
+.theme-swatch[data-theme-name="midnight"] .preview span:nth-child(3) { background: #8b6dff; }
+
+.theme-swatch[data-theme-name="sunset"] .preview span:nth-child(1) { background: #fff5ed; }
+.theme-swatch[data-theme-name="sunset"] .preview span:nth-child(2) { background: #ffe7d4; }
+.theme-swatch[data-theme-name="sunset"] .preview span:nth-child(3) { background: #e8542e; }
+
+.theme-swatch[data-theme-name="forest"] .preview span:nth-child(1) { background: #0f1814; }
+.theme-swatch[data-theme-name="forest"] .preview span:nth-child(2) { background: #1d3027; }
+.theme-swatch[data-theme-name="forest"] .preview span:nth-child(3) { background: #5ec97c; }
+
+.theme-swatch[data-theme-name="ocean"] .preview span:nth-child(1) { background: #07151a; }
+.theme-swatch[data-theme-name="ocean"] .preview span:nth-child(2) { background: #15333f; }
+.theme-swatch[data-theme-name="ocean"] .preview span:nth-child(3) { background: #3fc6e0; }
+
+.theme-swatch[data-theme-name="mono"] .preview span:nth-child(1) { background: #000000; }
+.theme-swatch[data-theme-name="mono"] .preview span:nth-child(2) { background: #161616; }
+.theme-swatch[data-theme-name="mono"] .preview span:nth-child(3) { background: #ffffff; }
+
+.theme-picker .auto-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.theme-picker .auto-row input[type="checkbox"] {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.theme-picker .auto-hint {
+  font-size: 11px;
+  color: var(--muted);
 }

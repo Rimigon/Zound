@@ -17,7 +17,12 @@ export const state = {
   lang: "ru",
   dict: {},
   showAllDevices: false,
-  theme: "auto",
+  /// Выбранная вручную палитра. Применяется, когда themeAuto === false.
+  /// Значения: dark | light | midnight | sunset | forest | ocean | mono.
+  theme: "dark",
+  /// Если true — фронт снимает атрибут data-theme и палитра определяется
+  /// `prefers-color-scheme` системы (см. style.css media query).
+  themeAuto: false,
   testRunning: new Map(), // device_name → { kind, bpm? }
   activePopover: null,
   suspendPersist: false, // race-guard под restoreSession
@@ -40,6 +45,7 @@ export const state = {
 export const KEYS = {
   showAll: "zound.showAllDevices",
   theme: "zound.theme",
+  themeAuto: "zound.themeAuto",
   latencyLink: "zound.latencyLinked",
   groups: "zound.deviceGroups",
   eq: "zound.deviceEq",

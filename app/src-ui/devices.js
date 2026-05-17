@@ -8,7 +8,7 @@ import { openTestPopover, formatTestRunning, stopTest } from "./tests.js";
 import { renderActives } from "./mixer.js";
 import { refreshTargetLatency } from "./sync.js";
 import { persistSession } from "./session.js";
-import { displayName } from "./aliases.js";
+import { displayName, labelForDeviceName } from "./aliases.js";
 import { openDeviceContextMenu } from "./device-menu.js";
 
 function devicesEqual(a, b) {
@@ -175,7 +175,7 @@ export async function addOutput(deviceName, endpointId) {
       muted: false,
       channels,
     });
-    setStatus(t("status-output-added") + ": " + deviceName, "ok");
+    setStatus(t("status-output-added") + ": " + labelForDeviceName(deviceName), "ok");
     renderDevices();
     renderActives();
     refreshTargetLatency();

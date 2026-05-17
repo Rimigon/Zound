@@ -5,6 +5,7 @@ import { state } from "./state.js";
 import { invoke } from "./ipc.js";
 import { t, tFmt } from "./i18n.js";
 import { setStatus } from "./status.js";
+import { labelForDeviceName } from "./aliases.js";
 
 export async function refreshTargetLatency() {
   const el = document.getElementById("target-latency");
@@ -60,8 +61,10 @@ export function refreshDefaultSourceWarning() {
   const el = document.getElementById("default-source-warning");
   if (!el) return;
   if (state.engineRunning && state.loopbackSource) {
+    // Алиас, если он задан: «<моё имя> (<системное имя>)». Так пользователь
+    // не теряет связь с тем, что у него подписано в системе.
     el.textContent = tFmt("default-source-warning", {
-      source: state.loopbackSource,
+      source: labelForDeviceName(state.loopbackSource),
     });
     el.classList.remove("hidden");
   } else {

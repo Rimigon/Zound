@@ -5,7 +5,8 @@
 import { state, KEYS, INTERVALS } from "./state.js";
 import { invoke, classifyError } from "./ipc.js";
 import { loadDictionary, applyStaticTranslations, t } from "./i18n.js";
-import { applyTheme, cycleTheme } from "./theme.js";
+import { applyTheme, loadThemeFromStorage } from "./theme.js";
+import { openThemePicker } from "./theme-picker.js";
 import { setStatus } from "./status.js";
 import {
   refreshDevices,
@@ -91,11 +92,11 @@ async function stopEngine() {
 
 async function init() {
   // Тема: inline-script в index.html уже выставил атрибут до загрузки CSS.
-  const savedTheme = localStorage.getItem(KEYS.theme);
-  state.theme =
-    savedTheme === "light" || savedTheme === "dark" ? savedTheme : "auto";
-  applyTheme(state.theme);
-  document.getElementById("theme-toggle").addEventListener("click", cycleTheme);
+  loadThemeFromStorage();
+  applyTheme();
+  document
+    .getElementById("theme-toggle")
+    .addEventListener("click", openThemePicker);
 
   document.getElementById("lang").addEventListener("change", async (e) => {
     state.lang = e.target.value;
