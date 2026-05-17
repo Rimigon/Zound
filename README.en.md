@@ -44,6 +44,29 @@ manual latency compensation, and a switchable UI (Russian / English).
 - 🌐 Language switch ru/en (Project Fluent, `.ftl` dictionaries).
 - 🧪 **`--self-test`** — headless smoke check used by CI.
 
+## What's new in 0.4.3
+
+- **Seven themes instead of two.** On top of `dark` and `light` you now
+  have `midnight` (deep blue-purple), `sunset` (warm peach/coral light),
+  `forest` (dark green), `ocean` (teal + mint dark) and `mono` (high
+  contrast — for screenshots and stress-testing the palette).
+- **Theme picker replaces the cycle button.** A 🎨 icon in the header
+  opens a popover with a grid of swatches (three-color preview per
+  theme) — pick one to apply it.
+- **Auto mode moved out of the button** into a separate "Follow system"
+  checkbox inside the picker. When enabled, the `data-theme` attribute
+  is removed from `<html>` and the palette is chosen entirely by
+  `@media (prefers-color-scheme)` in CSS — instant reaction, manual
+  presets are shown as disabled.
+- **Test-signal button works.** `.device-row` had `contain: layout
+  paint` — the `paint` containment was clipping the test-signal popover
+  (absolutely positioned below the row), so clicking 🔊 had no visible
+  effect. Reduced to `contain: layout`, popover is visible again.
+- **Device alias is now used in the default-source warning** and in
+  the "output added" status, formatted as "<alias> (<system name>)"
+  so the user sees both the custom name and the original side by
+  side. After renaming the banner refreshes immediately.
+
 ## What's new in 0.4.2
 
 - **In-app device rename.** Right-click on a device row (in the list or
