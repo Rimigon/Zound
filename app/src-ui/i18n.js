@@ -24,8 +24,9 @@ export function tFmt(key, args) {
   return raw;
 }
 
-/// Применить переводы ко всем `[data-i18n]` / `[data-i18n-title]`. Отдельные
-/// рендеры (devices, active rows) сами читают `t()` при перерисовке.
+/// Применить переводы ко всем `[data-i18n]` / `[data-i18n-title]` /
+/// `[data-i18n-aria-label]`. Отдельные рендеры (devices, active rows)
+/// сами читают `t()` при перерисовке.
 export function applyStaticTranslations() {
   document.querySelectorAll("[data-i18n]").forEach((el) => {
     const key = el.getAttribute("data-i18n");
@@ -34,6 +35,10 @@ export function applyStaticTranslations() {
   document.querySelectorAll("[data-i18n-title]").forEach((el) => {
     const key = el.getAttribute("data-i18n-title");
     el.title = t(key);
+  });
+  document.querySelectorAll("[data-i18n-aria-label]").forEach((el) => {
+    const key = el.getAttribute("data-i18n-aria-label");
+    el.setAttribute("aria-label", t(key));
   });
   document.documentElement.lang = state.lang;
 }

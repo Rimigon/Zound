@@ -61,7 +61,14 @@ export function setThemeAuto(enabled) {
 function syncToggleButton() {
   const btn = document.getElementById("theme-toggle");
   if (!btn) return;
-  // Кнопка-палитра одинаковая (🎨) — picker раскрывается по клику; пусть
-  // и активный пресет, и auto-режим читаются текстом подсказки.
-  btn.textContent = state.themeAuto ? "🖥" : "🎨";
+  // Кнопка-палитра (i-palette) — picker раскрывается по клику. В auto-
+  // режиме показываем sun/moon в зависимости от текущей системной темы.
+  const use = btn.querySelector("use");
+  if (!use) return;
+  if (state.themeAuto) {
+    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    use.setAttribute("href", dark ? "#i-moon" : "#i-sun");
+  } else {
+    use.setAttribute("href", "#i-palette");
+  }
 }

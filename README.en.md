@@ -44,6 +44,48 @@ manual latency compensation, and a switchable UI (Russian / English).
 - 🌐 Language switch ru/en (Project Fluent, `.ftl` dictionaries).
 - 🧪 **`--self-test`** — headless smoke check used by CI.
 
+## What's new in 0.5.0
+
+- **Full UI redesign.** A new visual language: pro-audio instrument,
+  dense grid, amber signal accent (LED-VU style), Geist + Geist Mono
+  typography with tabular-nums across every numeric readout. The
+  light theme moved to a warm porcelain base (not an inverted dark);
+  both themes share the same accent.
+- **Header split into three zones** — brand, master block (now the
+  hero of the bar with a large mono readout) and globals. The
+  «show all devices» toggle moved into the devices panel head as
+  a segmented chip switcher.
+- **Devices list rebuilt.** Active devices show an amber side rail
+  and tinted background — you can tell them apart at a glance,
+  without reading the action button. Default is its own green
+  pill-tag. Source is now an inline warn block inside the card
+  instead of a blurry full-card tint.
+- **Mixer rows reorganised.** Row header: name + group pill +
+  quick actions (mute / rename / reset). Primary controls: Volume
+  with built-in L/R peak meter and a dB scale + Latency with tick
+  marks. Balance + EQ moved into a collapsible «Advanced» section
+  that auto-opens for devices with non-default values.
+- **Sync collapsed into a single widget**: label + a sparkline of
+  recent drift (16 Hz, colour flips ok↔drift) + numeric drift/target
+  + a «Linked» toggle. Replaces the two tiny badges.
+- **Empty states**: «Engine stopped» — concentric dashed rings + EQ
+  glyph + a keyboard hint `Space`. «No active devices» — an arrow
+  pointing left to the devices list. Clear next step on screen.
+- **Update notice moved to a floating toast** in the top-right —
+  content no longer jumps when it appears or progresses. The footer
+  is now a timeline of the last three status messages with
+  opacity-faded history.
+- **Icons replace emojis.** A single inline-SVG sprite (`icons.js`,
+  ~26 symbols) — all via `currentColor`, sized through
+  `.icon`/`.icon-lg`. More stable cross-platform than 🔇🔊🌓⏹⟲.
+- **Window opens at 1280 × 800 and centred** — no more fishing for
+  the corners on narrow laptop screens. The header logo now uses
+  the project's `logo.png` instead of a placeholder mark.
+- **i18n: 19 new keys** (nav-mixer, filter-*, tag-*, sync-drift,
+  sync-target, ctrl-advanced, empty-engine-*, empty-active-*,
+  warning-source-*, update-available-title, group-add, group-members).
+  ru/en parity is checked by build.rs at compile time.
+
 ## What's new in 0.4.3
 
 - **Seven themes instead of two.** On top of `dark` and `light` you now

@@ -141,4 +141,26 @@ theme-name-forest = Лес
 theme-name-ocean = Океан
 theme-name-mono = Контраст
 
+# v0.5 — UI redesign: новые ключи под новый дизайн-язык
+nav-mixer = Микшер
+filter-outputs = Выходы
+filter-show-inputs = Показать входы
+tag-default = По умолч.
+tag-source = Источник
+tag-input = Вход
+action-input-only = Только вход
+sync-drift = Дрейф
+sync-target = Цель
+ctrl-advanced = Дополнительно
+empty-engine-title = Движок остановлен
+empty-engine-desc = Нажмите «Запустить», чтобы захватывать системный звук и параллельно отправлять его на выбранные устройства.
+empty-engine-hint = или нажмите
+empty-active-title = Нет активных устройств
+empty-active-desc = Выберите устройство в списке слева, чтобы начать раздачу звука.
+warning-source-title = Системный источник = это устройство.
+warning-source-desc = Возможна обратная связь. Переключите системный вывод на другое устройство.
+update-available-title = Доступно обновление
+group-add = группа
+group-members = устр.
+
 

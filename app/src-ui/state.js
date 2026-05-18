@@ -40,6 +40,10 @@ export const state = {
   /// Доступное обновление: { version, body } | null. Источник — Tauri
   /// updater plugin (см. updater.js).
   updateAvailable: null,
+  /// Открытость «Advanced» секции на конкретном устройстве. UI-only,
+  /// без persist — рендер делает за пользователя умолчания (auto-open,
+  /// если есть нестандартный balance/EQ).
+  advancedOpen: new Set(),
 };
 
 export const KEYS = {

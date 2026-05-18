@@ -4,6 +4,7 @@ import { state } from "./state.js";
 import { invoke, classifyError } from "./ipc.js";
 import { t, tFmt } from "./i18n.js";
 import { setStatus } from "./status.js";
+import { ic } from "./icons.js";
 
 export function formatTestRunning(running) {
   const kind = t("test-kind-" + running.kind);
@@ -25,21 +26,21 @@ export function openTestPopover(row, deviceName, onStart) {
   const pop = document.createElement("div");
   pop.className = "test-popover";
   pop.innerHTML = `
-    <button data-kind="click"></button>
-    <button data-kind="sine"></button>
-    <button data-kind="metronome"></button>
+    <button type="button" data-kind="click">${ic("i-click")}<span></span></button>
+    <button type="button" data-kind="sine">${ic("i-sine")}<span></span></button>
+    <button type="button" data-kind="metronome">${ic("i-metronome")}<span></span></button>
     <div class="metronome-form hidden">
       <label></label>
       <div class="bpm-row">
         <input type="range" min="40" max="240" value="120" />
         <span class="bpm-value">120 BPM</span>
       </div>
-      <button class="bpm-start"></button>
+      <button type="button" class="bpm-start"></button>
     </div>
   `;
-  pop.querySelector('[data-kind="click"]').textContent = t("test-kind-click");
-  pop.querySelector('[data-kind="sine"]').textContent = t("test-kind-sine");
-  pop.querySelector('[data-kind="metronome"]').textContent = t(
+  pop.querySelector('[data-kind="click"] span').textContent = t("test-kind-click");
+  pop.querySelector('[data-kind="sine"] span').textContent = t("test-kind-sine");
+  pop.querySelector('[data-kind="metronome"] span').textContent = t(
     "test-kind-metronome",
   );
   pop.querySelector(".metronome-form label").textContent = t("test-bpm-label");

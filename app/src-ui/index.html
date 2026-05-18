@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zound</title>
     <script>
-      // Применяем тему до первого кадра — иначе светлая тема мигает
-      // через тёмную при загрузке. Если включён auto-режим, атрибут не
-      // ставим вообще — палитра придёт через prefers-color-scheme в CSS.
+      // Применяем тему до первого кадра — иначе светлая мигает через
+      // тёмную при загрузке. Если включён auto-режим, атрибут не ставим
+      // вообще — палитра придёт через prefers-color-scheme в CSS.
       (function () {
         try {
           var auto = localStorage.getItem("zound.themeAuto") === "1";
@@ -20,68 +20,103 @@
         } catch (_) {}
       })();
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header class="bar">
-      <div class="brand-text">
-        <h1 data-i18n="app-title">Zound</h1>
-        <p class="subtitle" data-i18n="app-subtitle"></p>
-      </div>
-      <div class="controls">
-        <div class="master-controls" id="master-controls">
-          <label class="master-mute-wrap">
-            <input type="checkbox" id="master-mute" />
-            <span class="master-mute-icon" data-i18n-title="master-mute" aria-hidden="true">🔇</span>
-          </label>
-          <input type="range" id="master-gain" min="0" max="100" value="100" data-i18n-title="master-label" />
-          <span class="master-gain-value" id="master-gain-value">100%</span>
-        </div>
-        <label class="toggle inline">
-          <input type="checkbox" id="show-all-devices" />
-          <span data-i18n="show-all-devices">Показывать все устройства</span>
-        </label>
-        <select id="lang" aria-label="Language">
-          <option value="ru" data-i18n="language-ru">Русский</option>
-          <option value="en" data-i18n="language-en">English</option>
-        </select>
-        <button id="theme-toggle" class="icon-btn" data-i18n-title="theme-toggle-title" aria-label="Theme picker">🎨</button>
-        <button id="engine-toggle" class="primary" data-i18n="engine-start">Запустить</button>
-      </div>
-    </header>
-
-    <div id="update-banner" class="update-banner" hidden></div>
-
-    <main>
-      <section class="panel">
-        <h2 data-i18n="nav-devices">Устройства</h2>
-        <div id="default-source-warning" class="hint warning hidden"></div>
-        <div id="devices" class="devices"></div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <h2 data-i18n="nav-sync">Синхронизация</h2>
-          <div class="badges">
-            <label class="toggle inline" data-i18n-title="latency-link-title">
-              <input type="checkbox" id="latency-link" />
-              <span data-i18n="latency-link-label">Связать задержки</span>
-            </label>
-            <span id="sync-status" class="badge sync-badge hidden"></span>
-            <span id="target-latency" class="badge hidden"></span>
+    <div id="app" class="app">
+      <header class="bar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <img src="logo.png" alt="" />
+          </div>
+          <div>
+            <div class="brand-name" data-i18n="app-title">Zound</div>
+            <div class="tagline" data-i18n="app-subtitle">Мультиустройственный аудио-хаб</div>
           </div>
         </div>
-        <p class="hint" data-i18n="sync-hint">
-          Для каждого активного устройства можно вручную подстраивать
-          задержку. Ползунки влияют на общую целевую задержку.
-        </p>
-        <div id="active-outputs" class="active-outputs"></div>
-      </section>
-    </main>
 
-    <footer class="bar footer">
-      <span id="status" class="status"></span>
-    </footer>
+        <div class="bar-divider" aria-hidden="true"></div>
+
+        <div class="master" role="group" data-i18n-aria-label="master-label">
+          <label class="master-mute" id="master-mute-wrap" data-muted="false" data-i18n-title="master-mute">
+            <input type="checkbox" id="master-mute" />
+            <svg class="icon-lg master-mute-icon" aria-hidden="true"><use href="#i-unmute"/></svg>
+          </label>
+          <div class="master-slider-wrap">
+            <div class="master-label">
+              <span class="master-label-l" data-i18n="master-label">Общая громкость</span>
+              <span class="master-numeric">
+                <span class="v" id="master-gain-value">100</span><span class="u">%</span>
+              </span>
+            </div>
+            <div class="slider-fill" id="master-fill" style="--val:100;">
+              <span class="fill"></span>
+              <input type="range" class="slider" id="master-gain" min="0" max="100" value="100" data-i18n-title="master-label" />
+            </div>
+          </div>
+        </div>
+
+        <div class="globals">
+          <button class="lang-select" id="lang-toggle" type="button" data-i18n-title="language-label">
+            <span class="ru-opt active">RU</span>
+            <span class="sep">/</span>
+            <span class="en-opt">EN</span>
+          </button>
+          <button class="icon-btn" id="theme-toggle" type="button" data-i18n-title="theme-toggle-title" aria-label="Theme">
+            <svg class="icon-lg" aria-hidden="true"><use href="#i-palette"/></svg>
+          </button>
+          <button class="engine-btn" id="engine-toggle" type="button" data-state="stopped">
+            <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>
+            <span class="engine-label" data-i18n="engine-start">Запустить</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="main">
+        <section class="panel" aria-label="devices">
+          <header class="panel-head">
+            <h2>
+              <span data-i18n="nav-devices">Устройства</span>
+              <span class="count num" id="devices-count">0</span>
+            </h2>
+            <div class="devices-filter" role="group">
+              <button class="filter-chip" id="filter-outputs" type="button" aria-pressed="true">
+                <svg class="icon" aria-hidden="true"><use href="#i-speaker"/></svg>
+                <span data-i18n="filter-outputs">Выходы</span>
+              </button>
+              <button class="filter-chip" id="filter-all" type="button" aria-pressed="false">
+                <svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg>
+                <span data-i18n="filter-show-inputs">Показать входы</span>
+              </button>
+            </div>
+          </header>
+          <div class="panel-body">
+            <div id="devices" class="device-list"></div>
+          </div>
+        </section>
+
+        <section class="panel" aria-label="mixer">
+          <header class="panel-head mixer-head">
+            <h2>
+              <span data-i18n="nav-mixer">Микшер</span>
+              <span class="count num" id="actives-count">0</span>
+            </h2>
+            <div id="sync-widget-mount"></div>
+          </header>
+          <div class="panel-body">
+            <div id="active-outputs"></div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="status-bar">
+        <div class="status-msgs" id="status"></div>
+      </footer>
+
+      <div id="update-toast" class="update-toast" hidden></div>
+    </div>
 
     <script type="module" src="app.js"></script>
   </body>

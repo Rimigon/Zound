@@ -140,4 +140,26 @@ theme-name-forest = Forest
 theme-name-ocean = Ocean
 theme-name-mono = Contrast
 
+# v0.5 — UI redesign: new keys for the redesigned UI
+nav-mixer = Mixer
+filter-outputs = Outputs
+filter-show-inputs = Show inputs
+tag-default = Default
+tag-source = Source
+tag-input = Input
+action-input-only = Input only
+sync-drift = Drift
+sync-target = Target
+ctrl-advanced = Advanced
+empty-engine-title = Engine stopped
+empty-engine-desc = Press “Start” to capture system audio and route it to the devices you choose.
+empty-engine-hint = or press
+empty-active-title = No active devices
+empty-active-desc = Pick a device from the list on the left to start routing audio there.
+warning-source-title = System source = this device.
+warning-source-desc = May cause feedback. Switch the system output to a different device.
+update-available-title = Update available
+group-add = group
+group-members = dev.
+
 

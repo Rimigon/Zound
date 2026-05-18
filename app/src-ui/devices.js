@@ -1,4 +1,7 @@
-// Top-level список устройств (с кнопками Add/Remove + test 🔊).
+// Top-level список устройств (с кнопками Add/Remove + test).
+// DOM-контракт: .device[data-id][data-active][data-state] →
+//   .dev-status, .dev-meta (.dev-name-row + .dev-tech), .dev-test, .action-btn,
+//   опциональный .dev-warning (для state=source).
 
 import { state } from "./state.js";
 import { invoke, classifyError } from "./ipc.js";
@@ -8,8 +11,9 @@ import { openTestPopover, formatTestRunning, stopTest } from "./tests.js";
 import { renderActives } from "./mixer.js";
 import { refreshTargetLatency } from "./sync.js";
 import { persistSession } from "./session.js";
-import { displayName, labelForDeviceName } from "./aliases.js";
+import { displayName } from "./aliases.js";
 import { openDeviceContextMenu } from "./device-menu.js";
+import { ic, deviceIcon } from "./icons.js";
 
 function devicesEqual(a, b) {
   if (a.length !== b.length) return false;
@@ -47,66 +51,118 @@ export async function refreshDevices(options = {}) {
   }
 }
 
+/// Возвращает state-метку устройства для data-state. Приоритет важен:
+/// source > input > default > neutral. Active рисуется отдельным атрибутом.
+function deviceState(d, isSource) {
+  if (isSource) return "source";
+  if (d.isInputOnly) return "input";
+  if (d.isDefault) return "default";
+  return "neutral";
+}
+
+function tagsFor(d, isSource) {
+  const tags = [];
+  if (d.isDefault) tags.push(`<span class="tag tag-default">${t("tag-default")}</span>`);
+  if (isSource) tags.push(`<span class="tag tag-source">${t("tag-source")}</span>`);
+  if (d.isInputOnly) tags.push(`<span class="tag tag-input">${t("tag-input")}</span>`);
+  return tags.join("");
+}
+
+function actionFor(d, active, isSource) {
+  if (d.isInputOnly) {
+    return { variant: "input", label: t("action-input-only"), disabled: true, title: t("device-input-only-note") };
+  }
+  if (isSource) {
+    return { variant: "source", label: t("tag-source"), disabled: true, title: t("device-source-note") };
+  }
+  if (active) {
+    return { variant: "remove", label: t("device-remove"), disabled: false, title: "" };
+  }
+  return { variant: "add", label: t("device-add"), disabled: false, title: "" };
+}
+
 export function renderDevices() {
   const root = document.getElementById("devices");
   if (!root) return;
-  root.innerHTML = "";
   state.activePopover = null;
-  for (const d of state.devices) {
+  root.innerHTML = "";
+
+  const visible = state.devices.filter(
+    (d) => state.showAllDevices || !d.isInputOnly,
+  );
+  const countEl = document.getElementById("devices-count");
+  if (countEl) countEl.textContent = String(visible.length);
+
+  for (const d of visible) {
     const active = state.active.find((a) => a.id === d.id);
     const isSource =
       state.loopbackSource !== null && d.name === state.loopbackSource;
-    const inputOnly = !!d.isInputOnly;
+    const stateAttr = deviceState(d, isSource);
+    const shown = displayName(d);
+    const titleAttr =
+      shown === d.name ? d.name : `${shown}\n(${d.name})`;
+    const aliasFragment =
+      shown === d.name
+        ? ""
+        : ` <span class="dev-alias">· ${escapeHtml(d.name)}</span>`;
+    const tech = `${(d.sampleRate / 1000).toFixed(1)} kHz · ${
+      d.channels === 1 ? "mono" : "stereo"
+    } · ${d.isInputOnly ? "input" : "output"}`;
+
+    const action = actionFor(d, active, isSource);
+    const running = state.testRunning.get(d.name);
+    const testDisabled = d.isInputOnly || isSource;
+    const testIcon = running ? "i-stop" : "i-test";
 
     const row = document.createElement("div");
-    row.className =
-      "device-row" +
-      (d.isDefault ? " default" : "") +
-      (isSource ? " source" : "") +
-      (inputOnly ? " input-only" : "");
+    row.className = "device";
+    row.dataset.id = d.id;
+    row.dataset.active = active ? "true" : "false";
+    row.dataset.state = stateAttr;
     row.innerHTML = `
-      <div class="dot"></div>
-      <div class="info">
-        <div class="name"></div>
-        <div class="meta"></div>
+      <div class="dev-status" aria-hidden="true">${ic(deviceIcon(d))}</div>
+      <div class="dev-meta">
+        <div class="dev-name-row">
+          <span class="dev-name" title="${escapeAttr(titleAttr)}">${escapeHtml(shown)}${aliasFragment}</span>
+          <span class="dev-tags">${tagsFor(d, isSource)}</span>
+        </div>
+        <div class="dev-tech">${escapeHtml(tech)}</div>
       </div>
-      <button class="test-btn icon-btn" data-i18n-title="test-button-title">🔊</button>
-      <button class="action-btn"></button>
+      <button class="dev-test" type="button"
+              data-test="${d.id}" data-playing="${running ? "true" : "false"}"
+              ${testDisabled ? "disabled" : ""}
+              title="${escapeAttr(
+                running
+                  ? formatTestRunning(running)
+                  : isSource
+                  ? t("test-source-disabled")
+                  : t("test-button-title"),
+              )}">
+        ${ic(testIcon)}
+      </button>
+      <button class="action-btn" type="button"
+              data-action="${d.id}" data-variant="${action.variant}"
+              ${action.disabled ? "disabled" : ""}
+              ${action.title ? `title="${escapeAttr(action.title)}"` : ""}>
+        ${escapeHtml(action.label)}
+      </button>
+      ${
+        isSource
+          ? `<div class="dev-warning" role="note">
+              ${ic("i-alert")}
+              <div>
+                <span class="w-title">${t("warning-source-title")}</span>
+                ${t("warning-source-desc")}
+              </div>
+             </div>`
+          : ""
+      }
     `;
-    const nameEl = row.querySelector(".name");
-    const shown = displayName(d);
-    nameEl.textContent = shown;
-    nameEl.title = shown === d.name ? d.name : `${shown}\n(${d.name})`;
 
-    const meta = row.querySelector(".meta");
-    meta.textContent = `${d.sampleRate} Hz · ${d.channels} ch${
-      d.isDefault ? " · default" : ""
-    }`;
-    if (isSource) {
-      const badge = document.createElement("span");
-      badge.className = "source-badge";
-      badge.textContent = " · " + t("device-source-badge");
-      meta.appendChild(badge);
-    }
-    if (inputOnly) {
-      const badge = document.createElement("span");
-      badge.className = "input-badge";
-      badge.textContent = " · " + t("device-input-only-badge");
-      meta.appendChild(badge);
-    }
-
-    const testBtn = row.querySelector(".test-btn");
-    testBtn.title = t("test-button-title");
-    if (inputOnly) {
-      testBtn.disabled = true;
-    } else if (isSource) {
-      testBtn.disabled = true;
-      testBtn.title = t("test-source-disabled");
-    } else {
-      const running = state.testRunning.get(d.name);
+    // Test-button: либо открыть popover, либо остановить уже играющее.
+    const testBtn = row.querySelector(".dev-test");
+    if (!testDisabled) {
       if (running) {
-        testBtn.textContent = "⏹";
-        testBtn.title = formatTestRunning(running);
         testBtn.addEventListener("click", () =>
           stopTest(d.name).then(renderDevices),
         );
@@ -118,25 +174,16 @@ export function renderDevices() {
       }
     }
 
-    const btn = row.querySelector(".action-btn");
-    if (inputOnly) {
-      btn.textContent = t("device-input-only-badge");
-      btn.disabled = true;
-      btn.title = t("device-input-only-note");
-    } else if (isSource) {
-      btn.textContent = t("device-source-badge");
-      btn.disabled = true;
-      btn.title = t("device-source-note");
-    } else if (active) {
-      btn.textContent = t("device-remove");
-      btn.addEventListener("click", () => removeOutput(d.id));
-    } else {
-      btn.textContent = t("device-add");
-      btn.addEventListener("click", () => addOutput(d.name, d.endpointId));
+    // Action: Add / Remove. source/input — disabled.
+    if (!action.disabled) {
+      const actBtn = row.querySelector(".action-btn");
+      actBtn.addEventListener("click", () => {
+        if (active) removeOutput(d.id);
+        else addOutput(d.name, d.endpointId);
+      });
     }
 
-    // ПКМ → контекстное меню переименования. Только для устройств со
-    // стабильным endpointId — без него алиас не к чему привязать.
+    // ПКМ → контекстное меню переименования. Только если есть endpointId.
     if (d.endpointId) {
       row.addEventListener("contextmenu", (ev) => {
         ev.preventDefault();
@@ -151,9 +198,6 @@ export function renderDevices() {
 export async function addOutput(deviceName, endpointId) {
   try {
     if (!state.engineRunning) {
-      // startEngine импортируется ленивым require, чтобы не делать
-      // циклическую зависимость; вместо этого жёсткий call через invoke
-      // и обновим state ниже.
       await invoke("start_engine");
       const status = await invoke("engine_status");
       state.engineRunning = !!status.running;
@@ -175,7 +219,8 @@ export async function addOutput(deviceName, endpointId) {
       muted: false,
       channels,
     });
-    setStatus(t("status-output-added") + ": " + labelForDeviceName(deviceName), "ok");
+    const shown = displayName({ name: deviceName, endpointId });
+    setStatus(`${t("status-output-added")}: ${shown}`, "ok");
     renderDevices();
     renderActives();
     refreshTargetLatency();
@@ -204,4 +249,15 @@ export async function removeOutput(id) {
   } catch (e) {
     setStatus(String(e), "err");
   }
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/\n/g, "&#10;");
 }
