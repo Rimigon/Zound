@@ -34,3 +34,9 @@ desktop.ini
 /.env
 /.env.local
 /.env.*.local
+
+# Личное / локальные макеты
+.agents/
+Zound/
+docs/design-prompt.md
+skills-lock.json
